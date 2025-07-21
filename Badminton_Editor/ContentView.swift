@@ -119,12 +119,8 @@ struct ContentView: View {
         // 直接創建 AVPlayerItem，AVFoundation 會自動處理不同編碼格式
         let playerItem = AVPlayerItem(asset: asset)
         
-        // 設置通用的播放器優化參數
-        playerItem.preferredForwardBufferDuration = 3.0 // 3秒緩衝
-        playerItem.audioTimePitchAlgorithm = .lowQualityZeroLatency
-        
-        // 設置播放器行為
-        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        // 設置針對 HEVC 優化的播放器參數
+        await configurePlayerItemForOptimalPlayback(playerItem, asset: asset)
         
         // Use async loading for iOS 16+ compatibility
         do {
@@ -160,8 +156,8 @@ struct ContentView: View {
         // 設置音訊會話
         await configureAudioSession()
         
-        // 等待一小段時間確保影片完全載入，然後隱藏載入動畫
-        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+        // 減少等待時間，HEVC 需要更少的初始化時間
+        try? await Task.sleep(nanoseconds: 200_000_000) // 減少到 0.2 秒
         await MainActor.run {
             showLoadingAnimation = false
             thumbnailCache.isTranscoding = false
@@ -179,6 +175,65 @@ struct ContentView: View {
             print("ContentView: 音訊會話配置完成")
         } catch {
             print("ContentView: 配置音訊會話失敗: \(error)")
+        }
+    }
+    
+    /// 為播放器項目配置最佳播放設置（針對 HEVC 優化）
+    private func configurePlayerItemForOptimalPlayback(_ playerItem: AVPlayerItem, asset: AVAsset) async {
+        print("ContentView: 開始配置播放器優化設置...")
+        
+        // 檢測影片編碼格式
+        let isHEVC = await detectHEVCFormat(asset)
+        print("ContentView: 檢測到 HEVC 格式: \(isHEVC)")
+        
+        if isHEVC {
+            // HEVC 特殊優化設置
+            playerItem.preferredForwardBufferDuration = 5.0 // 增加到 5 秒緩衝
+            playerItem.audioTimePitchAlgorithm = .spectral // 使用更高品質的音訊算法
+            
+            // 啟用硬體解碼
+            if #available(iOS 15.0, *) {
+                playerItem.preferredMaximumResolution = CGSize(width: 1920, height: 1080)
+            }
+            
+            // 禁用網路資源使用以避免延遲
+            playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+            
+            print("ContentView: HEVC 優化設置已應用")
+        } else {
+            // H.264 或其他格式的標準設置
+            playerItem.preferredForwardBufferDuration = 3.0
+            playerItem.audioTimePitchAlgorithm = .lowQualityZeroLatency
+            playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+            
+            print("ContentView: 標準播放設置已應用")
+        }
+    }
+    
+    /// 快速檢測 HEVC 格式
+    private func detectHEVCFormat(_ asset: AVAsset) async -> Bool {
+        do {
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard let firstTrack = tracks.first else { return false }
+            
+            let formatDescriptions = try await firstTrack.load(.formatDescriptions)
+            guard let firstFormat = formatDescriptions.first else { return false }
+            
+            let formatDescription = firstFormat as! CMFormatDescription
+            let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDescription)
+            
+            // 常見 HEVC 格式檢測
+            let hevcCodes: [FourCharCode] = [
+                0x68766331, // 'hvc1'
+                0x68657631, // 'hev1'  
+                kCMVideoCodecType_HEVC,
+                kCMVideoCodecType_HEVCWithAlpha
+            ]
+            
+            return hevcCodes.contains(mediaSubType)
+        } catch {
+            print("ContentView: 無法檢測編碼格式，使用標準設置: \(error)")
+            return false
         }
     }
 }
