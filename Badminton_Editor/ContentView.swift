@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import AVFoundation
+import Photos
 import PhotosUI
 import VideoToolbox
 
@@ -15,7 +16,6 @@ struct ContentView: View {
     @State private var markers: [RallyMarker] = []
     @StateObject private var thumbnailCache = ThumbnailCache()
     @State private var showLoadingAnimation = false
-    @State private var currentVideoURL: URL? // 用於管理安全作用域 URL
 
     var body: some View {
         ZStack {
@@ -83,19 +83,18 @@ struct ContentView: View {
         .preferredColorScheme(.dark) // 強制使用深色模式
         .sheet(isPresented: $showVideoPicker) {
             VideoPicker(
-                onFinish: { asset, url in
-                    // 首先，停止存取上一個影片的 URL (如果有的話)
-                    if let oldURL = self.currentVideoURL {
-                        oldURL.stopAccessingSecurityScopedResource()
-                        print("ContentView: 已停止存取上一個安全作用域資源")
+                onFinish: { assetIdentifier in
+                    guard let assetIdentifier = assetIdentifier else {
+                        print("ContentView: 未獲取到 asset identifier")
+                        // 隱藏載入動畫
+                        showLoadingAnimation = false
+                        thumbnailCache.isTranscoding = false
+                        return
                     }
-                    // 儲存新的 URL
-                    self.currentVideoURL = url
 
-                    if let asset = asset {
-                        Task {
-                            await loadVideoAsset(asset)
-                        }
+                    // 使用 assetIdentifier 載入影片
+                    Task {
+                        await loadVideo(from: assetIdentifier)
                     }
                 },
                 onSelectionStart: {
@@ -111,6 +110,42 @@ struct ContentView: View {
     
     // MARK: - Helper Methods for Video Loading
     
+    /// 從 PHAsset localIdentifier 載入影片
+    private func loadVideo(from assetIdentifier: String) async {
+        print("ContentView: 開始從 PHAsset identifier 載入影片: \(assetIdentifier)")
+
+        // 1. 獲取 PHAsset
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil).firstObject else {
+            print("ContentView: 無法找到對應的 PHAsset")
+            await MainActor.run {
+                showLoadingAnimation = false
+                thumbnailCache.isTranscoding = false
+            }
+            return
+        }
+
+        // 2. 從 PHAsset 請求 AVAsset
+        let options = PHVideoRequestOptions()
+        options.version = .current
+        options.deliveryMode = .highQualityFormat // 請求高畫質影片
+        options.isNetworkAccessAllowed = true // 允許從 iCloud 下載
+
+        do {
+            let avAsset = try await PHImageManager.default().requestAVAsset(forVideo: asset, options: options)
+            print("ContentView: 成功從 PHAsset 獲取到 AVAsset")
+
+            // 3. 使用獲取到的 AVAsset 載入播放器
+            await loadVideoAsset(avAsset)
+
+        } catch {
+            print("ContentView: 從 PHAsset 請求 AVAsset 失敗: \(error)")
+            await MainActor.run {
+                showLoadingAnimation = false
+                thumbnailCache.isTranscoding = false
+            }
+        }
+    }
+
     /// 載入影片資源到播放器 - 極速載入優化版本
     private func loadVideoAsset(_ asset: AVAsset) async {
         print("ContentView: 開始極速載入影片資源...")
@@ -931,11 +966,11 @@ struct TranscodingProgressPopup: View {
 // MARK: - VideoPicker 修改
 // 功能: 選擇影片後清空舊的標記點
 struct VideoPicker: UIViewControllerRepresentable {
-    var onFinish: (AVAsset?, URL?) -> Void
+    var onFinish: (String?) -> Void // 返回 PHAsset 的 localIdentifier
     var onSelectionStart: (() -> Void)?
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
-        var config = PHPickerConfiguration()
+        var config = PHPickerConfiguration(photoLibrary: .shared()) // 使用共享的照片庫
         config.filter = .videos
         config.selectionLimit = 1
         let picker = PHPickerViewController(configuration: config)
@@ -963,52 +998,18 @@ struct VideoPicker: UIViewControllerRepresentable {
             // 先關閉選擇器，讓 UI 反應更即時
             picker.dismiss(animated: true)
             
-            guard let provider = results.first?.itemProvider else {
-                parent.onFinish(nil, nil)
+            guard let result = results.first else {
+                parent.onFinish(nil)
                 return
             }
             
-            // ✅ 使用 loadItem 並處理安全作用域 URL
-            if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-                provider.loadItem(forTypeIdentifier: UTType.movie.identifier, options: nil) { (urlData, error) in
-                    DispatchQueue.main.async {
-                        if let error = error {
-                            print("VideoPicker: 載入項目失敗: \(error.localizedDescription)")
-                            self.parent.onFinish(nil, nil)
-                            return
-                        }
-                        
-                        guard let url = urlData as? URL else {
-                            print("VideoPicker: 無法轉換為 URL")
-                            self.parent.onFinish(nil, nil)
-                            return
-                        }
-                        
-                        // 處理安全作用域 URL - 開始存取，但不在此處停止
-                        let didStartAccessing = url.startAccessingSecurityScopedResource()
-                        if didStartAccessing {
-                            print("VideoPicker: 成功開始存取安全作用域資源。存取權將由 ContentView 管理。")
-                        } else {
-                            print("VideoPicker: 警告 - 無法存取安全作用域資源，AVFoundation 可能會載入失敗。")
-                        }
-                        
-                        // 創建 AVURLAsset
-                        let asset = AVURLAsset(url: url, options: [
-                            AVURLAssetPreferPreciseDurationAndTimingKey: false,
-                            AVURLAssetAllowsCellularAccessKey: true
-                        ])
-                        
-                        print("VideoPicker: 安全作用域 URL 準備完成: \(url.lastPathComponent)")
-                        
-                        // 將 asset 和 url 傳遞給 ContentView，由它來管理生命週期
-                        self.parent.onFinish(asset, url)
-                    }
-                }
+            // 直接獲取 PHAsset 的 localIdentifier
+            if let assetIdentifier = result.assetIdentifier {
+                print("VideoPicker: 成功獲取到 assetIdentifier: \(assetIdentifier)")
+                parent.onFinish(assetIdentifier)
             } else {
-                DispatchQueue.main.async {
-                    print("VideoPicker: 無支援的影片格式")
-                    self.parent.onFinish(nil, nil)
-                }
+                print("VideoPicker: 無法獲取 assetIdentifier")
+                parent.onFinish(nil)
             }
         }
     }
