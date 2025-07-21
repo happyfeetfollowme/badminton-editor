@@ -118,7 +118,21 @@ extension ThumbnailCache {
                             
                             // 檢查是否可以生成縮圖
                             self.testThumbnailGeneration(for: avAsset, at: 1.0)
+                            
+                            // 提供轉碼選項
+                            print("ThumbnailCache: 🔄 HEVC detected - offering H.264 transcoding option")
+                            self.offerTranscodingOption(for: phAsset, hevcAsset: avAsset)
+                        } else {
+                            print("ThumbnailCache: ✅ Non-HEVC video detected (codec: \(codecStr)). No transcoding needed.")
+                            
+                            // 為了測試目的，也可以提供轉碼選項
+                            #if DEBUG
+                            print("ThumbnailCache: 🧪 DEBUG: Offering transcoding option for testing")
+                            self.offerTranscodingOption(for: phAsset, hevcAsset: avAsset)
+                            #endif
                         }
+                    } else {
+                        print("ThumbnailCache: ⚠️ No format description found for video track")
                     }
                 }
 
@@ -240,6 +254,218 @@ extension ThumbnailCache {
             }
         }
     }
+    
+    // MARK: - Video Transcoding Support
+    
+    /// 提供 HEVC 轉 H.264 轉碼選項
+    private func offerTranscodingOption(for phAsset: PHAsset, hevcAsset: AVAsset) {
+        print("ThumbnailCache: 🔄 Offering H.264 transcoding for HEVC video...")
+        
+        // 檢查是否可以轉碼
+        guard canTranscodeToH264(asset: hevcAsset) else {
+            print("ThumbnailCache: ❌ Asset cannot be transcoded to H.264")
+            return
+        }
+        
+        // 發送轉碼通知給 UI 層，包含更多詳細資訊
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("HEVCTranscodingAvailable"),
+                object: nil,
+                userInfo: [
+                    "phAsset": phAsset,
+                    "hevcAsset": hevcAsset,
+                    "thumbnailCache": self,
+                    "videoInfo": [
+                        "duration": hevcAsset.duration.seconds,
+                        "isPlayable": hevcAsset.isPlayable,
+                        "hasVideoTracks": !hevcAsset.tracks(withMediaType: .video).isEmpty
+                    ]
+                ]
+            )
+        }
+    }
+    
+    /// 檢查是否可以轉碼為 H.264
+    private func canTranscodeToH264(asset: AVAsset) -> Bool {
+        // 檢查 AVAssetExportSession 是否支援 H.264 轉碼
+        let supportedTypes = AVAssetExportSession.exportPresets(compatibleWith: asset)
+        return supportedTypes.contains(AVAssetExportPresetMediumQuality) ||
+               supportedTypes.contains(AVAssetExportPreset1280x720) ||
+               supportedTypes.contains(AVAssetExportPreset1920x1080)
+    }
+    
+    /// 執行 HEVC 轉 H.264 轉碼
+    func transcodeHEVCToH264(
+        phAsset: PHAsset,
+        hevcAsset: AVAsset,
+        quality: TranscodingQuality = .medium,
+        progressHandler: @escaping (Float) -> Void,
+        completion: @escaping (Result<AVAsset, TranscodingError>) -> Void
+    ) {
+        print("ThumbnailCache: 🔄 Starting HEVC to H.264 transcoding...")
+        
+        // 檢查是否已經有正在進行的轉碼
+        if isTranscoding {
+            print("ThumbnailCache: ⚠️ Transcoding already in progress")
+            completion(.failure(.unknownError))
+            return
+        }
+        
+        // 建立輸出 URL
+        let outputURL = createTranscodedVideoURL(for: phAsset)
+        
+        // 刪除已存在的檔案
+        try? FileManager.default.removeItem(at: outputURL)
+        
+        // 建立 export session，使用智能預設選擇
+        var exportSession = AVAssetExportSession(asset: hevcAsset, presetName: quality.exportPreset)
+        
+        // 如果主要預設失敗，嘗試備用預設
+        if exportSession == nil, let fallbackPreset = quality.fallbackPreset {
+            print("ThumbnailCache: Primary preset failed, trying fallback preset...")
+            exportSession = AVAssetExportSession(asset: hevcAsset, presetName: fallbackPreset)
+        }
+        
+        guard let validExportSession = exportSession else {
+            print("ThumbnailCache: ❌ Failed to create AVAssetExportSession with any preset")
+            completion(.failure(.exportSessionCreationFailed))
+            return
+        }
+        
+        // 儲存 export session 以便取消
+        activeExportSession = validExportSession
+        
+        // 設定輸出
+        validExportSession.outputURL = outputURL
+        validExportSession.outputFileType = .mp4
+        validExportSession.shouldOptimizeForNetworkUse = true
+        
+        // 設定視頻編碼設定，確保輸出為 H.264
+        validExportSession.metadata = nil // 清除可能導致問題的元數據
+        
+        // 更新轉碼狀態
+        Task { @MainActor in
+            isTranscoding = true
+            transcodingProgress = 0.0
+        }
+        
+        // 監控進度
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
+            let progress = validExportSession.progress
+            Task { @MainActor in
+                self.transcodingProgress = progress
+                progressHandler(progress)
+            }
+            
+            if validExportSession.status != .exporting {
+                timer.invalidate()
+            }
+        }
+        
+        // 開始轉碼
+        validExportSession.exportAsynchronously { [weak self] in
+            DispatchQueue.main.async {
+                timer.invalidate()
+                
+                guard let self = self else { return }
+                
+                // 清除活動的 export session
+                self.activeExportSession = nil
+                self.isTranscoding = false
+                
+                switch validExportSession.status {
+                case .completed:
+                    print("ThumbnailCache: ✅ H.264 transcoding completed successfully")
+                    self.transcodingProgress = 1.0
+                    
+                    // 建立新的 AVAsset
+                    let h264Asset = AVAsset(url: outputURL)
+                    completion(.success(h264Asset))
+                    
+                    // 自動設定轉碼後的 asset
+                    self.setAsset(h264Asset)
+                    
+                case .failed:
+                    let error = validExportSession.error
+                    print("ThumbnailCache: ❌ Transcoding failed: \(error?.localizedDescription ?? "Unknown error")")
+                    
+                    // 清理失敗的檔案
+                    try? FileManager.default.removeItem(at: outputURL)
+                    completion(.failure(.exportFailed(error)))
+                    
+                case .cancelled:
+                    print("ThumbnailCache: ⚠️ Transcoding was cancelled")
+                    try? FileManager.default.removeItem(at: outputURL)
+                    completion(.failure(.cancelled))
+                    
+                default:
+                    print("ThumbnailCache: ⚠️ Transcoding ended with unexpected status: \(validExportSession.status.rawValue)")
+                    completion(.failure(.unknownError))
+                }
+            }
+        }
+    }
+    
+    /// 建立轉碼檔案的 URL
+    private func createTranscodedVideoURL(for phAsset: PHAsset) -> URL {
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let transcodedFolder = documentsPath.appendingPathComponent("TranscodedVideos")
+        
+        // 建立資料夾如果不存在
+        try? FileManager.default.createDirectory(at: transcodedFolder, withIntermediateDirectories: true)
+        
+        // 使用 PHAsset 的 localIdentifier 作為檔名
+        let filename = "\(phAsset.localIdentifier)_h264.mp4"
+        return transcodedFolder.appendingPathComponent(filename)
+    }
+    
+    /// 檢查是否已經有轉碼版本
+    func hasTranscodedVersion(for phAsset: PHAsset) -> Bool {
+        let transcodedURL = createTranscodedVideoURL(for: phAsset)
+        return FileManager.default.fileExists(atPath: transcodedURL.path)
+    }
+    
+    /// 取得轉碼版本的 AVAsset
+    func getTranscodedAsset(for phAsset: PHAsset) -> AVAsset? {
+        guard hasTranscodedVersion(for: phAsset) else { return nil }
+        let transcodedURL = createTranscodedVideoURL(for: phAsset)
+        return AVAsset(url: transcodedURL)
+    }
+    
+    /// 清理轉碼檔案
+    func cleanupTranscodedFiles() {
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let transcodedFolder = documentsPath.appendingPathComponent("TranscodedVideos")
+        
+        do {
+            let files = try FileManager.default.contentsOfDirectory(at: transcodedFolder, includingPropertiesForKeys: nil)
+            for file in files {
+                try FileManager.default.removeItem(at: file)
+                print("ThumbnailCache: 🗑️ Cleaned up transcoded file: \(file.lastPathComponent)")
+            }
+        } catch {
+            print("ThumbnailCache: ❌ Error cleaning up transcoded files: \(error)")
+        }
+    }
+    
+    /// 取消正在進行的轉碼
+    func cancelTranscoding() {
+        guard let exportSession = activeExportSession, isTranscoding else {
+            print("ThumbnailCache: No active transcoding to cancel")
+            return
+        }
+        
+        print("ThumbnailCache: 🛑 Cancelling transcoding...")
+        exportSession.cancelExport()
+        
+        // 清除狀態
+        activeExportSession = nil
+        Task { @MainActor in
+            isTranscoding = false
+            transcodingProgress = 0.0
+        }
+    }
 }
 
 /// Priority levels for thumbnail generation to optimize performance
@@ -260,6 +486,11 @@ class ThumbnailCache: ObservableObject {
     
     @Published var thumbnails: [TimeInterval: UIImage] = [:]
     @Published var isGenerating: Bool = false
+    
+    // Transcoding support
+    private var activeExportSession: AVAssetExportSession?
+    @Published var isTranscoding: Bool = false
+    @Published var transcodingProgress: Float = 0.0
     
     // Cache configuration
     private let maxCacheSize: Int = 80 // 減少快取數量以因應更高解析度
@@ -946,5 +1177,66 @@ class ThumbnailCache: ObservableObject {
         }
         
         print("Cache limits adjusted for zoom level: \(pixelsPerSecond)x")
+    }
+}
+
+/// 轉碼品質選項
+enum TranscodingQuality {
+    case low
+    case medium
+    case high
+    
+    var exportPreset: String {
+        switch self {
+        case .low:
+            return AVAssetExportPresetLowQuality
+        case .medium:
+            return AVAssetExportPresetMediumQuality
+        case .high:
+            // 優先使用 1080p，如果不支援則使用 720p
+            return AVAssetExportPreset1920x1080
+        }
+    }
+    
+    /// 獲取備用預設（如果主要預設不支援）
+    var fallbackPreset: String? {
+        switch self {
+        case .high:
+            return AVAssetExportPreset1280x720 // 1080p 的備用方案
+        default:
+            return nil
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .low:
+            return "低品質 (檔案較小, 快速轉碼)"
+        case .medium:
+            return "中等品質 (平衡選項, 推薦)"
+        case .high:
+            return "高品質 1080p (檔案較大, 最佳品質)"
+        }
+    }
+}
+
+/// 轉碼錯誤類型
+enum TranscodingError: Error, LocalizedError {
+    case exportSessionCreationFailed
+    case exportFailed(Error?)
+    case cancelled
+    case unknownError
+    
+    var errorDescription: String? {
+        switch self {
+        case .exportSessionCreationFailed:
+            return "無法建立轉碼會話"
+        case .exportFailed(let error):
+            return "轉碼失敗: \(error?.localizedDescription ?? "未知錯誤")"
+        case .cancelled:
+            return "轉碼已取消"
+        case .unknownError:
+            return "未知的轉碼錯誤"
+        }
     }
 }
