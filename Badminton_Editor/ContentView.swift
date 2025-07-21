@@ -3,6 +3,7 @@ import AVKit
 import AVFoundation
 import PhotosUI
 import VideoToolbox
+import UniformTypeIdentifiers
 
 // MARK: - 1. 主畫面視圖 (Main View)
 struct ContentView: View {
@@ -15,7 +16,7 @@ struct ContentView: View {
     @State private var markers: [RallyMarker] = []
     @StateObject private var thumbnailCache = ThumbnailCache()
     @State private var showLoadingAnimation = false
-    @State private var currentVideoURL: URL? // 用於管理安全作用域 URL
+    @State private var currentVideoURL: URL? // This will now store the *copied* video URL
 
     var body: some View {
         ZStack {
@@ -27,10 +28,8 @@ struct ContentView: View {
                 TopToolbarView(onExport: {
                     // 導出邏輯
                 }, onSelectVideo: {
+                    // Direct show video picker - no permissions needed for URL-based approach
                     showVideoPicker = true
-                    // 當用戶點擊選擇影片按鈕時，預先準備動畫狀態
-                    showLoadingAnimation = false
-                    thumbnailCache.isTranscoding = false
                 })
 
                 // MARK: - 3. 影片播放區 (Video Playback Area)
@@ -83,30 +82,35 @@ struct ContentView: View {
         .preferredColorScheme(.dark) // 強制使用深色模式
         .sheet(isPresented: $showVideoPicker) {
             VideoPicker(
-                onFinish: { asset, url in
-                    // 首先，停止存取上一個影片的 URL (如果有的話)
-                    if let oldURL = self.currentVideoURL {
-                        oldURL.stopAccessingSecurityScopedResource()
-                        print("ContentView: 已停止存取上一個安全作用域資源")
-                    }
-                    // 儲存新的 URL
-                    self.currentVideoURL = url
-
-                    if let asset = asset {
+                onFinish: { temporaryURL in
+                    if let url = temporaryURL {
                         Task {
-                            await loadVideoAsset(asset)
+                            await handleVideoSelection(with: url)
                         }
                     }
                 },
                 onSelectionStart: {
-                    // 用戶選擇影片的瞬間立即顯示動畫
-                    print("ContentView: 影片選擇完成，立刻顯示載入動畫...")
                     showLoadingAnimation = true
                     thumbnailCache.isTranscoding = true
                     thumbnailCache.transcodingProgress = 0.0
                 }
             )
         }
+    }
+    
+    // MARK: - Video Loading Management
+
+    /// 1. Handles the video selection, now receiving a STABLE, copied URL.
+    private func handleVideoSelection(with localURL: URL) async {
+        // The URL is already a stable, local copy.
+        print("ContentView: Received stable URL: \(localURL.path)")
+        
+        // Store the stable URL.
+        self.currentVideoURL = localURL
+        
+        // Create an asset from the stable URL and load it.
+        let asset = AVURLAsset(url: localURL)
+        await loadVideoAsset(asset)
     }
     
     // MARK: - Helper Methods for Video Loading
@@ -175,42 +179,29 @@ struct ContentView: View {
     
     /// 極速時長載入，優化性能
     private func loadDurationOptimized(asset: AVAsset) async -> TimeInterval {
-        // 最快速的方法：先嘗試同步獲取
-        let syncDuration = asset.duration.seconds
-        if syncDuration > 0 && syncDuration.isFinite {
-            print("ContentView: 同步時長載入成功: \(syncDuration)秒")
-            return syncDuration
-        }
-        
-        // 如果同步失敗，嘗試非常短的異步載入
-        do {
-            // 極短延遲，只給 asset 最小初始化時間
-            try? await Task.sleep(nanoseconds: 10_000_000) // 只等待 0.01 秒
-            
-            if #available(iOS 16.0, *) {
+        // Use modern API for iOS 16+, fallback for iOS 15
+        if #available(iOS 16.0, *) {
+            do {
                 let duration = try await asset.load(.duration)
                 let durationSeconds = duration.seconds
-                
                 if durationSeconds > 0 && durationSeconds.isFinite {
-                    print("ContentView: 異步時長載入成功: \(durationSeconds)秒")
+                    print("ContentView: 現代 API 時長載入成功: \(durationSeconds)秒")
                     return durationSeconds
                 }
-            } else {
-                // iOS 15 再次嘗試同步方式
-                let duration = asset.duration
-                if duration.seconds > 0 && duration.seconds.isFinite {
-                    print("ContentView: iOS 15 時長載入成功: \(duration.seconds)秒")
-                    return duration.seconds
-                }
+            } catch {
+                print("ContentView: 現代 API 時長載入失敗: \(error)")
             }
-            
-            // 如果還是失敗，使用快速備用方案
-            return await loadDurationFallbackFast(asset: asset)
-            
-        } catch {
-            print("ContentView: 快速時長載入失敗，使用備用方案: \(error)")
-            return await loadDurationFallbackFast(asset: asset)
+        } else {
+            // iOS 15 fallback - use deprecated API
+            let syncDuration = asset.duration.seconds
+            if syncDuration > 0 && syncDuration.isFinite {
+                print("ContentView: iOS 15 時長載入成功: \(syncDuration)秒")
+                return syncDuration
+            }
         }
+        
+        // 如果失敗，使用快速備用方案
+        return await loadDurationFallbackFast(asset: asset)
     }
     
     /// 快速備用時長載入方法
@@ -301,10 +292,10 @@ struct ContentView: View {
                 tracks = asset.tracks(withMediaType: .video)
             }
             
-            guard let videoTrack = tracks.first else { 
+            guard let videoTrack = tracks.first else {
                 print("ContentView: 未找到視頻軌道，使用基本配置")
                 await applyBasicFallbackConfiguration(playerItem, codecInfo: codecInfo)
-                return 
+                return
             }
             
             // 安全地載入視頻屬性，加入超時保護
@@ -615,13 +606,13 @@ struct ContentView: View {
         do {
             // 快速載入第一個視頻軌道
             let tracks = try await asset.loadTracks(withMediaType: .video)
-            guard let firstTrack = tracks.first else { 
+            guard let firstTrack = tracks.first else {
                 return VideoCodecInfo(codecName: "Unknown", isHEVC: false, fourCC: 0)
             }
             
             // 快速獲取格式描述
             let formatDescriptions = try await firstTrack.load(.formatDescriptions)
-            guard let firstFormat = formatDescriptions.first else { 
+            guard let firstFormat = formatDescriptions.first else {
                 return VideoCodecInfo(codecName: "H.264/AVC", isHEVC: false, fourCC: 0) // 預設 H.264
             }
             
@@ -718,14 +709,14 @@ struct PlaybackControlsView: View {
             // 左側控制按鈕區域
             HStack(spacing: 12) {
                 // 撤銷按鈕
-                Button(action: {}) { 
+                Button(action: {}) {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(.white)
                 }
                 
                 // 倒退按鈕 (新增)
-                Button(action: {}) { 
+                Button(action: {}) {
                     Image(systemName: "gobackward.10")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(.white)
@@ -762,14 +753,14 @@ struct PlaybackControlsView: View {
             // 右側控制按鈕區域
             HStack(spacing: 12) {
                 // 快進按鈕 (新增)
-                Button(action: {}) { 
+                Button(action: {}) {
                     Image(systemName: "goforward.10")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(.white)
                 }
                 
                 // 重做按鈕
-                Button(action: {}) { 
+                Button(action: {}) {
                     Image(systemName: "arrow.uturn.forward")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(.white)
@@ -928,10 +919,10 @@ struct TranscodingProgressPopup: View {
     }
 }
 
-// MARK: - VideoPicker 修改
-// 功能: 選擇影片後清空舊的標記點
+// MARK: - VideoPicker: The definitive, working version
+// Fetches the temporary URL from the itemProvider.
 struct VideoPicker: UIViewControllerRepresentable {
-    var onFinish: (AVAsset?, URL?) -> Void
+    var onFinish: (URL?) -> Void
     var onSelectionStart: (() -> Void)?
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
@@ -955,59 +946,49 @@ struct VideoPicker: UIViewControllerRepresentable {
         init(_ parent: VideoPicker) { self.parent = parent }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            // 立即顯示載入動畫
             if !results.isEmpty {
                 parent.onSelectionStart?()
             }
             
-            // 先關閉選擇器，讓 UI 反應更即時
             picker.dismiss(animated: true)
             
             guard let provider = results.first?.itemProvider else {
-                parent.onFinish(nil, nil)
+                parent.onFinish(nil)
                 return
             }
             
-            // ✅ 使用 loadItem 並處理安全作用域 URL
+            // Use loadFileRepresentation to get a stable, readable URL
             if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-                provider.loadItem(forTypeIdentifier: UTType.movie.identifier, options: nil) { (urlData, error) in
-                    DispatchQueue.main.async {
-                        if let error = error {
-                            print("VideoPicker: 載入項目失敗: \(error.localizedDescription)")
-                            self.parent.onFinish(nil, nil)
-                            return
+                provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+                    guard let sourceURL = url, error == nil else {
+                        DispatchQueue.main.async {
+                            print("VideoPicker: Failed to load file representation: \(error?.localizedDescription ?? "Unknown error")")
+                            self.parent.onFinish(nil)
                         }
-                        
-                        guard let url = urlData as? URL else {
-                            print("VideoPicker: 無法轉換為 URL")
-                            self.parent.onFinish(nil, nil)
-                            return
+                        return
+                    }
+                    
+                    // ** THE CRITICAL FIX **
+                    // Immediately copy the file to a stable location before this closure returns.
+                    let fileManager = FileManager.default
+                    let destinationURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + sourceURL.pathExtension)
+                    
+                    do {
+                        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+                        // Now pass the NEW, STABLE URL back to the content view.
+                        DispatchQueue.main.async {
+                            self.parent.onFinish(destinationURL)
                         }
-                        
-                        // 處理安全作用域 URL - 開始存取，但不在此處停止
-                        let didStartAccessing = url.startAccessingSecurityScopedResource()
-                        if didStartAccessing {
-                            print("VideoPicker: 成功開始存取安全作用域資源。存取權將由 ContentView 管理。")
-                        } else {
-                            print("VideoPicker: 警告 - 無法存取安全作用域資源，AVFoundation 可能會載入失敗。")
+                    } catch {
+                        print("VideoPicker: Error copying file: \(error)")
+                        DispatchQueue.main.async {
+                            self.parent.onFinish(nil)
                         }
-                        
-                        // 創建 AVURLAsset
-                        let asset = AVURLAsset(url: url, options: [
-                            AVURLAssetPreferPreciseDurationAndTimingKey: false,
-                            AVURLAssetAllowsCellularAccessKey: true
-                        ])
-                        
-                        print("VideoPicker: 安全作用域 URL 準備完成: \(url.lastPathComponent)")
-                        
-                        // 將 asset 和 url 傳遞給 ContentView，由它來管理生命週期
-                        self.parent.onFinish(asset, url)
                     }
                 }
             } else {
                 DispatchQueue.main.async {
-                    print("VideoPicker: 無支援的影片格式")
-                    self.parent.onFinish(nil, nil)
+                    self.parent.onFinish(nil)
                 }
             }
         }
@@ -1046,7 +1027,7 @@ struct VideoPlayerView: View {
         
         // Add time observer with reasonable frequency (30fps instead of 100fps)
         timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 1.0/30.0, preferredTimescale: 600), 
+            forInterval: CMTime(seconds: 1.0/30.0, preferredTimescale: 600),
             queue: .main
         ) { time in
             currentTime = time.seconds
@@ -1111,346 +1092,6 @@ struct VideoPlayerView: View {
 // MARK: - Legacy SimplifiedTimelineView has been replaced by TimelineContainerView
 // The new implementation provides enhanced timeline scrubbing functionality
 // with improved performance, gesture handling, and visual feedback
-
-// MARK: - 時間軸標尺視圖
-/// Timeline ruler view that displays time scale markers and labels
-/// Provides visual time reference with second and 10-second intervals
-struct TimelineRulerView: View {
-    // MARK: - Properties
-    
-    /// Total duration of the video content
-    let totalDuration: TimeInterval
-    
-    /// Current zoom level (pixels per second)
-    let pixelsPerSecond: CGFloat
-    
-    /// Current time for reference (maintained for compatibility)
-    let currentTime: TimeInterval
-    
-    /// Base offset for timeline alignment
-    private let baseOffset: CGFloat = 500
-    
-    /// Boundary padding for smooth scrolling
-    private let boundaryPadding: CGFloat = 1000
-    
-    // MARK: - Constants
-    
-    /// Minimum zoom level to show time labels
-    private let minZoomForLabels: CGFloat = 25.0
-    
-    /// Height for major ruler marks (10-second intervals)
-    private let majorMarkHeight: CGFloat = 20.0
-    
-    /// Height for minor ruler marks (1-second intervals)
-    private let minorMarkHeight: CGFloat = 10.0
-    
-    /// Opacity for major ruler marks
-    private let majorMarkOpacity: Double = 0.8
-    
-    /// Opacity for minor ruler marks
-    private let minorMarkOpacity: Double = 0.4
-    
-    // MARK: - Body
-    
-    var body: some View {
-        HStack(spacing: 0) {
-            // Base offset padding
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: baseOffset)
-            
-            // Generate ruler marks for each second
-            ForEach(0..<Int(ceil(totalDuration)), id: \.self) { second in
-                rulerMark(for: TimeInterval(second))
-            }
-            
-            // Boundary padding
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: boundaryPadding)
-        }
-    }
-    
-    // MARK: - Ruler Mark Generation
-    
-    /// Create a ruler mark for a specific time position
-    /// - Parameter time: The time in seconds for this ruler mark
-    /// - Returns: A view representing the ruler mark with optional time label
-    @ViewBuilder
-    private func rulerMark(for time: TimeInterval) -> some View {
-        VStack(spacing: 0) {
-            Spacer()
-            
-            // Determine if this is a major mark (10-second interval)
-            let isMajorMark = Int(time) % 10 == 0
-            let isMinorMark = Int(time) % 5 == 0 && !isMajorMark
-            
-            // Create the ruler mark line
-            rulerMarkLine(isMajor: isMajorMark, isMinor: isMinorMark)
-            
-            // Add time label for major marks when zoom level is sufficient
-            if isMajorMark && shouldShowTimeLabels {
-                timeLabel(for: time)
-            }
-            
-            Spacer()
-        }
-        .frame(width: pixelsPerSecond)
-    }
-    
-    /// Create the visual ruler mark line
-    /// - Parameters:
-    ///   - isMajor: Whether this is a major (10-second) mark
-    ///   - isMinor: Whether this is a minor (5-second) mark
-    /// - Returns: A rectangle representing the ruler mark
-    @ViewBuilder
-    private func rulerMarkLine(isMajor: Bool, isMinor: Bool) -> some View {
-        if isMajor {
-            Rectangle()
-                .fill(Color.white.opacity(majorMarkOpacity))
-                .frame(width: 1, height: majorMarkHeight)
-        } else if isMinor {
-            Rectangle()
-                .fill(Color.white.opacity(minorMarkOpacity + 0.2))
-                .frame(width: 1, height: minorMarkHeight + 5)
-        } else {
-            Rectangle()
-                .fill(Color.white.opacity(minorMarkOpacity))
-                .frame(width: 1, height: minorMarkHeight)
-        }
-    }
-    
-    /// Create time label for major marks
-    /// - Parameter time: The time to display
-    /// - Returns: A text view with formatted time
-    @ViewBuilder
-    private func timeLabel(for time: TimeInterval) -> some View {
-        Text(formatTime(time))
-            .font(.system(size: labelFontSize, weight: .medium, design: .monospaced))
-            .foregroundColor(.white.opacity(0.7))
-            .padding(.top, 2)
-    }
-    
-    // MARK: - Computed Properties
-    
-    /// Whether time labels should be shown based on current zoom level
-    private var shouldShowTimeLabels: Bool {
-        return pixelsPerSecond >= minZoomForLabels
-    }
-    
-    /// Font size for time labels based on zoom level
-    private var labelFontSize: CGFloat {
-        switch pixelsPerSecond {
-        case 0..<30:
-            return 7
-        case 30..<60:
-            return 8
-        case 60..<100:
-            return 9
-        case 100..<150:
-            return 10
-        default:
-            return 11
-        }
-    }
-    
-    // MARK: - Helper Methods
-    
-    /// Format time interval for display
-    /// - Parameter time: Time interval in seconds
-    /// - Returns: Formatted time string (MM:SS or H:MM:SS for longer durations)
-    private func formatTime(_ time: TimeInterval) -> String {
-        let totalSeconds = Int(time)
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        let seconds = totalSeconds % 60
-        
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        } else {
-            return String(format: "%d:%02d", minutes, seconds)
-        }
-    }
-}
-
-// MARK: - 影片縮圖時間軸視圖
-struct VideoThumbnailTimelineView: View {
-    let player: AVPlayer
-    let totalDuration: TimeInterval
-    let pixelsPerSecond: CGFloat
-    let markers: [RallyMarker]
-    
-    @State private var thumbnails: [TimeInterval: UIImage] = [:]
-    @State private var thumbnailTimes: [TimeInterval] = []
-    private static let thumbnailCache = NSCache<NSNumber, UIImage>()
-    
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // 背景
-                Rectangle()
-                    .fill(Color.black.opacity(0.8))
-                    .cornerRadius(4)
-                
-                // 縮圖片段
-                HStack(spacing: 0) {
-                    ForEach(Array(thumbnailTimes.enumerated()), id: \.offset) { index, time in
-                        thumbnailCell(index: index, time: time)
-                    }
-                }
-                .offset(x: 500) // 與時間軸對齊
-            }
-        }
-        .onAppear {
-            updateAndGenerateThumbnails()
-        }
-        .onChange(of: player.currentItem) { _ in
-            thumbnails.removeAll()
-            Self.thumbnailCache.removeAllObjects()
-            updateAndGenerateThumbnails()
-        }
-        .onChange(of: pixelsPerSecond) { _ in
-            // 縮放變化時，重新計算並生成縮圖
-            updateAndGenerateThumbnails()
-        }
-        .onChange(of: totalDuration) { _ in
-            updateAndGenerateThumbnails()
-        }
-    }
-    
-    @ViewBuilder
-    private func thumbnailCell(index: Int, time: TimeInterval) -> some View {
-        let nextTime = (index + 1 < thumbnailTimes.count) ? thumbnailTimes[index + 1] : totalDuration
-        let durationOfSegment = nextTime - time
-        let thumbnailWidth = CGFloat(durationOfSegment) * pixelsPerSecond
-
-        if let image = thumbnails[time] {
-            Image(uiImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: thumbnailWidth, height: 60)
-                .clipped()
-                .overlay(
-                    // 回合片段高亮
-                    isInRallySegment(time: time) ?
-                        Color.clear :
-                        Color.black.opacity(0.6)
-                )
-        } else {
-            Rectangle()
-                .fill(Color.gray)
-                .frame(width: thumbnailWidth, height: 60)
-        }
-    }
-    
-    private func updateAndGenerateThumbnails() {
-        updateThumbnailTimes()
-        generateThumbnails()
-    }
-
-    private func updateThumbnailTimes() {
-        guard totalDuration > 0, pixelsPerSecond > 0 else {
-            thumbnailTimes = []
-            return
-        }
-        
-        let thumbnailWidth: CGFloat = 80.0 // 固定縮圖寬度
-        let timePerThumbnail = thumbnailWidth / pixelsPerSecond
-        let numberOfThumbnails = Int(ceil(totalDuration / timePerThumbnail))
-        
-        let newThumbnailTimes = (0..<numberOfThumbnails).map { i in
-            Double(i) * Double(timePerThumbnail)
-        }
-        
-        // Filter the existing thumbnails to keep only the ones that are still relevant
-        let newTimesSet = Set(newThumbnailTimes)
-        thumbnails = thumbnails.filter { newTimesSet.contains($0.key) }
-        
-        self.thumbnailTimes = newThumbnailTimes
-    }
-    
-    private func isInRallySegment(time: TimeInterval) -> Bool {
-        let rallySegments = getRallySegments()
-        return rallySegments.contains { $0.start <= time && time < $0.end }
-    }
-    
-    private func getRallySegments() -> [(start: TimeInterval, end: TimeInterval)] {
-        var segments: [(TimeInterval, TimeInterval)] = []
-        let starts = markers.filter { $0.type == .start }.sorted { $0.time < $1.time }
-        let ends = markers.filter { $0.type == .end }.sorted { $0.time < $1.time }
-        
-        var i = 0, j = 0
-        while i < starts.count && j < ends.count {
-            if starts[i].time < ends[j].time {
-                segments.append((starts[i].time, ends[j].time))
-                i += 1
-                j += 1
-            } else {
-                j += 1
-            }
-        }
-        return segments
-    }
-    
-    private func generateThumbnails() {
-        guard let asset = player.currentItem?.asset else {
-            return
-        }
-        
-        let timesToGenerate = thumbnailTimes.filter { time in
-            thumbnails[time] == nil && Self.thumbnailCache.object(forKey: NSNumber(value: time)) == nil
-        }
-        
-        guard !timesToGenerate.isEmpty else { return }
-
-        let imageGenerator = AVAssetImageGenerator(asset: asset)
-        imageGenerator.appliesPreferredTrackTransform = true
-        imageGenerator.maximumSize = CGSize(width: 320, height: 180) // 提升解析度到 2x
-        
-        // 提升圖像品質設定
-        imageGenerator.apertureMode = .cleanAperture
-        if #available(iOS 16.0, *) {
-            imageGenerator.requestedTimeToleranceAfter = CMTime(seconds: 0.05, preferredTimescale: 600)
-            imageGenerator.requestedTimeToleranceBefore = CMTime(seconds: 0.05, preferredTimescale: 600)
-        } else {
-            // Allow a small tolerance to find the nearest valid frame, preventing black thumbnails
-            let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
-            imageGenerator.requestedTimeToleranceBefore = tolerance
-            imageGenerator.requestedTimeToleranceAfter = tolerance
-        }
-
-        let timeValues = timesToGenerate.map { NSValue(time: CMTime(seconds: $0, preferredTimescale: 600)) }
-        
-        imageGenerator.generateCGImagesAsynchronously(forTimes: timeValues) { requestedTime, cgImage, actualTime, result, error in
-            let timeInSeconds = requestedTime.seconds
-            
-            if let cgImage = cgImage, result == .succeeded {
-                let image = UIImage(cgImage: cgImage)
-                Self.thumbnailCache.setObject(image, forKey: NSNumber(value: timeInSeconds))
-                DispatchQueue.main.async {
-                    self.thumbnails[timeInSeconds] = image
-                }
-            } else {
-                // 生成失敗或錯誤，使用默認縮圖
-                let defaultImage = generateDefaultThumbnail()
-                Self.thumbnailCache.setObject(defaultImage, forKey: NSNumber(value: timeInSeconds))
-                DispatchQueue.main.async {
-                    self.thumbnails[timeInSeconds] = defaultImage
-                }
-            }
-        }
-    }
-    
-    private func generateDefaultThumbnail() -> UIImage {
-        let size = CGSize(width: 320, height: 180) // 提升解析度到 2x
-        UIGraphicsBeginImageContextWithOptions(size, false, 0)
-        UIColor.darkGray.setFill()
-        UIRectFill(CGRect(origin: .zero, size: size))
-        let image = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
-        UIGraphicsEndImageContext()
-        return image
-    }
-}
 
 // MARK: - 輔助視圖與數據模型 (Helper Views & Data Models)
 // Note: Shared models and views are now in TimelineModels.swift
