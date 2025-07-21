@@ -83,18 +83,11 @@ struct ContentView: View {
         .preferredColorScheme(.dark) // 強制使用深色模式
         .sheet(isPresented: $showVideoPicker) {
             VideoPicker(
-                onFinish: { asset, url in
-                    // 首先，停止存取上一個影片的 URL (如果有的話)
-                    if let oldURL = self.currentVideoURL {
-                        oldURL.stopAccessingSecurityScopedResource()
-                        print("ContentView: 已停止存取上一個安全作用域資源")
-                    }
-                    // 儲存新的 URL
-                    self.currentVideoURL = url
-
-                    if let asset = asset {
+                onFinish: { playerItem, url in
+                    // 新的 playerItem 會自動管理 URL 的生命週期，無需手動處理
+                    if let playerItem = playerItem {
                         Task {
-                            await loadVideoAsset(asset)
+                            await loadVideoAsset(playerItem: playerItem)
                         }
                     }
                 },
@@ -112,11 +105,8 @@ struct ContentView: View {
     // MARK: - Helper Methods for Video Loading
     
     /// 載入影片資源到播放器 - 極速載入優化版本
-    private func loadVideoAsset(_ asset: AVAsset) async {
+    private func loadVideoAsset(playerItem: SecurityScopedPlayerItem) async {
         print("ContentView: 開始極速載入影片資源...")
-        
-        // 立即創建 AVPlayerItem，不等待任何檢測
-        let playerItem = AVPlayerItem(asset: asset)
         
         // 立即設置播放器以開始預載，這是最關鍵的優化
         await MainActor.run {
@@ -138,6 +128,10 @@ struct ContentView: View {
         }
         
         // 並行處理所有非關鍵任務，不阻塞播放器設置
+        guard let asset = playerItem.asset as? AVURLAsset else {
+            print("ContentView: 錯誤 - playerItem 的 asset 為空或類型不對")
+            return
+        }
         async let audioSessionTask = configureAudioSession()
         async let codecInfoTask = detectVideoCodecFormat(asset)
         async let durationTask = loadDurationOptimized(asset: asset)
@@ -672,6 +666,29 @@ struct ContentView: View {
     }
 }
 
+// MARK: - 安全作用域播放器項目 (Security Scoped Player Item)
+/// 一個自定義的 AVPlayerItem 子類，用於管理安全作用域 URL 的生命週期。
+/// 當這個 AVPlayerItem 被銷毀時 (deinit)，它會自動釋放對 URL 的安全存取權限。
+class SecurityScopedPlayerItem: AVPlayerItem {
+    private let securityScopedURL: URL
+
+    /// 初始化方法
+    /// - Parameters:
+    ///   - url: 需要安全存取權限的影片 URL。
+    ///   - asset: 從 URL 創建的 AVURLAsset。
+    init(url: URL, asset: AVURLAsset) {
+        self.securityScopedURL = url
+        super.init(asset: asset, automaticallyLoadedAssetKeys: nil)
+        print("SecurityScopedPlayerItem: 已創建並開始管理 URL: \(url.lastPathComponent)")
+    }
+
+    deinit {
+        // 在物件被銷毀時，停止存取安全作用域資源
+        securityScopedURL.stopAccessingSecurityScopedResource()
+        print("SecurityScopedPlayerItem: 已銷毀並停止存取 URL: \(securityScopedURL.lastPathComponent)")
+    }
+}
+
 // MARK: - UI 組件 (UI Components)
 
 // 2. 頂部工具列
@@ -931,7 +948,7 @@ struct TranscodingProgressPopup: View {
 // MARK: - VideoPicker 修改
 // 功能: 選擇影片後清空舊的標記點
 struct VideoPicker: UIViewControllerRepresentable {
-    var onFinish: (AVAsset?, URL?) -> Void
+    var onFinish: (SecurityScopedPlayerItem?, URL?) -> Void
     var onSelectionStart: (() -> Void)?
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
@@ -984,12 +1001,11 @@ struct VideoPicker: UIViewControllerRepresentable {
                             return
                         }
                         
-                        // 處理安全作用域 URL - 開始存取，但不在此處停止
+                        // 處理安全作用域 URL - 開始存取
                         let didStartAccessing = url.startAccessingSecurityScopedResource()
-                        if didStartAccessing {
-                            print("VideoPicker: 成功開始存取安全作用域資源。存取權將由 ContentView 管理。")
-                        } else {
-                            print("VideoPicker: 警告 - 無法存取安全作用域資源，AVFoundation 可能會載入失敗。")
+                        if !didStartAccessing {
+                            print("VideoPicker: 警告 - 無法開始存取安全作用域資源。")
+                            // 即使失敗，也繼續嘗試，因為有時仍然可以工作
                         }
                         
                         // 創建 AVURLAsset
@@ -998,10 +1014,13 @@ struct VideoPicker: UIViewControllerRepresentable {
                             AVURLAssetAllowsCellularAccessKey: true
                         ])
                         
-                        print("VideoPicker: 安全作用域 URL 準備完成: \(url.lastPathComponent)")
+                        // 創建新的 SecurityScopedPlayerItem
+                        let playerItem = SecurityScopedPlayerItem(url: url, asset: asset)
+
+                        print("VideoPicker: SecurityScopedPlayerItem 創建完成: \(url.lastPathComponent)")
                         
-                        // 將 asset 和 url 傳遞給 ContentView，由它來管理生命週期
-                        self.parent.onFinish(asset, url)
+                        // 將 playerItem 和 url 傳遞給 ContentView
+                        self.parent.onFinish(playerItem, url)
                     }
                 }
             } else {
