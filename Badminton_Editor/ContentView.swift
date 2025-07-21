@@ -137,6 +137,11 @@ struct ContentView: View {
         // Store the PHAsset for future reference
         self.currentPHAsset = phAsset
         
+        // Set the PHAsset in the thumbnail cache so it can generate thumbnails
+        await MainActor.run {
+            thumbnailCache.setPHAsset(phAsset)
+        }
+        
         // Request AVAsset directly from PHAsset
         await requestAVAssetFromPHAsset(phAsset)
     }
