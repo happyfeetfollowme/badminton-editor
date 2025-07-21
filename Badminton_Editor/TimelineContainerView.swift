@@ -389,10 +389,10 @@ struct TimelineContainerView: View {
         // Apply immediate update for responsive scrubbing (no animation during drag)
         timelineState.contentOffset = newOffset
         
-        // Perform throttled seeking for smooth performance (less frequent than every frame)
+        // Perform throttled seeking for smooth performance
         let now = CACurrentMediaTime()
-        if now - timelineState.lastSeekTime > 0.033 { // Limit to 30fps for seeking
-            performDebouncedSeek(to: targetTime)
+        if now - timelineState.lastSeekTime > 0.033 { // Limit to ~30fps for seeking
+            performThrottledSeek(to: targetTime)
             timelineState.updateLastSeekTime(now)
         }
         
@@ -410,8 +410,8 @@ struct TimelineContainerView: View {
             let timeOffset = Double(totalDragDistance / timelineState.pixelsPerSecond)
             let finalTime = handleTimelineBoundaries(dragStartTime + timeOffset, totalDuration: totalDuration)
             
-            // Final seek without debouncing for precision, with error handling
-            timelineState.performImmediateSeek(to: finalTime, player: player) { success, error in
+            // Final seek for precision, with error handling
+            timelineState.performSeek(to: finalTime, player: player) { success, error in
                 if !success {
                     self.handleSeekError(error)
                 }
@@ -451,12 +451,14 @@ struct TimelineContainerView: View {
         enableAutomaticScrolling()
     }
     
-    /// Perform debounced seeking to prevent excessive AVPlayer calls
-    private func performDebouncedSeek(to targetTime: TimeInterval) {
+    /// Perform throttled seeking to prevent excessive AVPlayer calls
+    private func performThrottledSeek(to targetTime: TimeInterval) {
+        // Don't issue a new seek if one is already in progress
+        guard !timelineState.isSeeking else { return }
+
         let startTime = CACurrentMediaTime()
         
-        // Use enhanced timer-based debouncing with error handling
-        timelineState.scheduleDebouncedSeek(to: targetTime, player: player) { success, error in
+        timelineState.performSeek(to: targetTime, player: player) { success, error in
             let duration = CACurrentMediaTime() - startTime
             performanceMonitor.recordSeekOperation(duration: duration, success: success)
             
@@ -473,15 +475,12 @@ struct TimelineContainerView: View {
         // Log error for debugging
         print("Timeline seek error: \(error.localizedDescription)")
         
-        // Check if we have too many consecutive failures
-        if timelineState.hasTooManySeekFailures {
-            // Attempt recovery by seeking to last known good position
-            let recoveryTime = timelineState.lastKnownGoodSeekTime
-            timelineState.performImmediateSeek(to: recoveryTime, player: player) { success, _ in
-                if success {
-                    // Reset failure tracking on successful recovery
-                    timelineState.resetSeekFailureTracking()
-                }
+        // Attempt recovery by seeking to last known good position
+        let recoveryTime = timelineState.lastKnownGoodSeekTime
+        timelineState.performSeek(to: recoveryTime, player: player) { success, _ in
+            if success {
+                // Reset failure tracking on successful recovery
+                timelineState.resetSeekFailureTracking()
             }
         }
     }
@@ -502,8 +501,8 @@ struct TimelineContainerView: View {
         let timeOffset = Double(tapOffsetFromCenter / timelineState.pixelsPerSecond)
         let newTime = max(0, min(totalDuration, currentTime + timeOffset))
         
-        // Use immediate seek for tap gestures (no debouncing needed for single taps)
-        timelineState.performImmediateSeek(to: newTime, player: player) { success, error in
+        // Use performSeek for tap gestures
+        timelineState.performSeek(to: newTime, player: player) { success, error in
             if !success {
                 handleSeekError(error)
             }

@@ -48,11 +48,8 @@ class TimelineState: ObservableObject {
     /// Whether the timeline is currently being actively scrubbed
     @Published var isActivelyScrubbing: Bool = false
     
-    /// Timer for debounced seeking operations
-    private var seekDebounceTimer: Timer?
-    
-    /// Pending seek time for debounced operations
-    private var pendingSeekTime: TimeInterval?
+    /// Whether a seek operation is currently in progress
+    @Published var isSeeking: Bool = false
     
     /// Last successful seek time for error recovery
     private var lastSuccessfulSeekTime: TimeInterval = 0
@@ -164,9 +161,9 @@ class TimelineState: ObservableObject {
         lastSeekTime = 0
         dragVelocity = 0
         isActivelyScrubbing = false
+        isSeeking = false
         
         // Clean up debouncing state
-        cancelPendingSeek()
         lastSuccessfulSeekTime = 0
         consecutiveSeekFailures = 0
     }
@@ -207,63 +204,7 @@ class TimelineState: ObservableObject {
         lastSeekTime = time
     }
     
-    // MARK: - Enhanced Debouncing Methods
-    
-    /// Schedule a debounced seek operation using timer-based approach
-    /// - Parameters:
-    ///   - targetTime: The time to seek to
-    ///   - player: AVPlayer instance to perform seek on
-    ///   - completion: Optional completion handler called after seek attempt
-    func scheduleDebouncedSeek(
-        to targetTime: TimeInterval,
-        player: AVPlayer,
-        completion: ((Bool, Error?) -> Void)? = nil
-    ) {
-        // Store the pending seek time
-        pendingSeekTime = targetTime
-        
-        // Cancel any existing timer
-        seekDebounceTimer?.invalidate()
-        
-        // Create new timer with 33ms delay (30fps limit)
-        seekDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.033, repeats: false) { [weak self] _ in
-            self?.executePendingSeek(player: player, completion: completion)
-        }
-    }
-    
-    /// Execute the pending seek operation with error handling
-    /// - Parameters:
-    ///   - player: AVPlayer instance to perform seek on
-    ///   - completion: Optional completion handler called after seek attempt
-    private func executePendingSeek(
-        player: AVPlayer,
-        completion: ((Bool, Error?) -> Void)? = nil
-    ) {
-        guard let targetTime = pendingSeekTime else {
-            completion?(false, SeekError.noPendingSeek)
-            return
-        }
-        
-        // Clear pending seek
-        pendingSeekTime = nil
-        
-        // Create CMTime with high precision timescale
-        let cmTime = CMTime(seconds: targetTime, preferredTimescale: 600)
-        
-        // Perform seek with completion handler for error tracking
-        player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in
-            DispatchQueue.main.async {
-                self?.handleSeekCompletion(
-                    completed: completed,
-                    targetTime: targetTime,
-                    completion: completion
-                )
-            }
-        }
-        
-        // Update last seek time
-        updateLastSeekTime(CACurrentMediaTime())
-    }
+    // MARK: - Seeking Methods
     
     /// Handle seek operation completion with error tracking
     /// - Parameters:
@@ -297,23 +238,24 @@ class TimelineState: ObservableObject {
         }
     }
     
-    /// Perform immediate seek without debouncing (for final precision seeks)
-    /// - Parameters:
-    ///   - targetTime: The time to seek to
-    ///   - player: AVPlayer instance to perform seek on
-    ///   - completion: Optional completion handler called after seek attempt
-    func performImmediateSeek(
+    func performSeek(
         to targetTime: TimeInterval,
         player: AVPlayer,
         completion: ((Bool, Error?) -> Void)? = nil
     ) {
-        // Cancel any pending debounced seeks
-        cancelPendingSeek()
+        // Prevent concurrent seeks
+        guard !isSeeking else {
+            completion?(false, nil)
+            return
+        }
+
+        isSeeking = true
         
         let cmTime = CMTime(seconds: targetTime, preferredTimescale: 600)
         
         player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in
             DispatchQueue.main.async {
+                self?.isSeeking = false
                 self?.handleSeekCompletion(
                     completed: completed,
                     targetTime: targetTime,
@@ -323,18 +265,6 @@ class TimelineState: ObservableObject {
         }
         
         updateLastSeekTime(CACurrentMediaTime())
-    }
-    
-    /// Cancel any pending debounced seek operations
-    func cancelPendingSeek() {
-        seekDebounceTimer?.invalidate()
-        seekDebounceTimer = nil
-        pendingSeekTime = nil
-    }
-    
-    /// Check if there are too many consecutive seek failures
-    var hasTooManySeekFailures: Bool {
-        return consecutiveSeekFailures >= 5
     }
     
     /// Reset seek failure tracking

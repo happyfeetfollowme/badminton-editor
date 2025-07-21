@@ -88,6 +88,8 @@ class ThumbnailCache: ObservableObject {
     // MARK: - Asset Management
     
     func setAsset(_ newAsset: AVAsset) {
+        cancelAllOperations()
+
         print("ThumbnailCache: Setting new asset with duration: \(newAsset.duration.seconds)")
         asset = newAsset
         clearCache()
@@ -532,8 +534,11 @@ class ThumbnailCache: ObservableObject {
             )
             context.cgContext.fill(dotRect)
             
-            // Add time text
+            // Add time and priority text
             let timeText = formatTimeForFallback(time)
+            let priorityText = "P: \(priority)"
+            let fullText = "\(timeText) (\(priorityText))"
+
             let attributes: [NSAttributedString.Key: Any] = [
                 .foregroundColor: UIColor.white.withAlphaComponent(0.9),
                 .font: UIFont.systemFont(ofSize: 9, weight: .medium),
@@ -541,7 +546,7 @@ class ThumbnailCache: ObservableObject {
                 .strokeWidth: -1.0
             ]
             
-            let textSize = timeText.size(withAttributes: attributes)
+            let textSize = fullText.size(withAttributes: attributes)
             let textRect = CGRect(
                 x: (thumbnailSize.width - textSize.width) / 2,
                 y: thumbnailSize.height - textSize.height - 4,
@@ -549,7 +554,7 @@ class ThumbnailCache: ObservableObject {
                 height: textSize.height
             )
             
-            timeText.draw(in: textRect, withAttributes: attributes)
+            fullText.draw(in: textRect, withAttributes: attributes)
         }
     }
     
@@ -572,8 +577,7 @@ class ThumbnailCache: ObservableObject {
     // MARK: - Utility Methods
     
     func cancelAllOperations() {
-        // Note: AVAssetImageGenerator doesn't provide direct cancellation
-        // This method is here for future enhancement if needed
+        imageGenerator?.cancelAllCGImageGeneration()
         Task { @MainActor in
             isGenerating = false
         }
