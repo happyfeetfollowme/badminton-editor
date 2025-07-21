@@ -12,6 +12,8 @@ struct ContentView: View {
     @State private var totalDuration: TimeInterval = 0
     @State private var showVideoPicker = false
     @State private var markers: [RallyMarker] = []
+    @StateObject private var thumbnailCache = ThumbnailCache()
+    @State private var showLoadingAnimation = false
 
     var body: some View {
         ZStack {
@@ -24,6 +26,9 @@ struct ContentView: View {
                     // 導出邏輯
                 }, onSelectVideo: {
                     showVideoPicker = true
+                    // 當用戶點擊選擇影片按鈕時，預先準備動畫狀態
+                    showLoadingAnimation = false
+                    thumbnailCache.isTranscoding = false
                 })
 
                 // MARK: - 3. 影片播放區 (Video Playback Area)
@@ -58,34 +63,122 @@ struct ContentView: View {
 
                 MainActionToolbarView()
             }
+            
+            // MARK: - 影片載入進度 Popup (Video Loading Progress Popup)
+            if thumbnailCache.isTranscoding || showLoadingAnimation {
+                TranscodingProgressPopup(
+                    progress: thumbnailCache.transcodingProgress,
+                    onCancel: {
+                        if thumbnailCache.isTranscoding {
+                            thumbnailCache.cancelTranscoding()
+                        } else {
+                            showLoadingAnimation = false
+                        }
+                    }
+                )
+            }
         }
         .preferredColorScheme(.dark) // 強制使用深色模式
         .sheet(isPresented: $showVideoPicker) {
-            VideoPicker { asset in
-                if let asset = asset {
-                    let playerItem = AVPlayerItem(asset: asset)
-                    player.replaceCurrentItem(with: playerItem)
-                    totalDuration = asset.duration.seconds
-                    markers = []
-                    
-                    // 確保 currentTime 重置為 0.0，這將觸發 timeline 對齊
-                    currentTime = 0.0
-                    
-                    // Configure audio settings when new video is loaded
-                    player.isMuted = false
-                    player.volume = 1.0
-                    
-                    // Ensure audio session is configured
-                    do {
-                        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-                        try AVAudioSession.sharedInstance().setActive(true)
-                    } catch {
-                        print("Failed to configure audio session: \(error)")
+            VideoPicker(
+                onFinish: { asset in
+                    if let asset = asset {
+                        Task {
+                            print("ContentView: 開始載入影片資源...")
+                            // 直接載入影片，AVFoundation 會自動處理不同編碼格式
+                            await loadVideoAsset(asset)
+                        }
                     }
-                    
-                    print("ContentView: Video loaded, currentTime set to \(currentTime), totalDuration: \(totalDuration)")
+                },
+                onSelectionStart: {
+                    // 用戶選擇影片的瞬間立即顯示動畫
+                    print("ContentView: 影片選擇完成，立刻顯示載入動畫...")
+                    showLoadingAnimation = true
+                    thumbnailCache.isTranscoding = true
+                    thumbnailCache.transcodingProgress = 0.0
                 }
+            )
+        }
+    }
+    
+    // MARK: - Helper Methods for Video Loading
+    
+    /// 載入影片資源到播放器
+    private func loadVideoAsset(_ asset: AVAsset) async {
+        print("ContentView: 開始載入影片資源...")
+        
+        // 確保載入動畫正在顯示
+        await MainActor.run {
+            if !showLoadingAnimation {
+                showLoadingAnimation = true
+                thumbnailCache.isTranscoding = true
+                thumbnailCache.transcodingProgress = 0.0
             }
+        }
+        
+        // 直接創建 AVPlayerItem，AVFoundation 會自動處理不同編碼格式
+        let playerItem = AVPlayerItem(asset: asset)
+        
+        // 設置通用的播放器優化參數
+        playerItem.preferredForwardBufferDuration = 3.0 // 3秒緩衝
+        playerItem.audioTimePitchAlgorithm = .lowQualityZeroLatency
+        
+        // 設置播放器行為
+        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        
+        // Use async loading for iOS 16+ compatibility
+        do {
+            let duration = try await asset.load(.duration)
+            await MainActor.run {
+                player.replaceCurrentItem(with: playerItem)
+                totalDuration = duration.seconds
+                markers = []
+                
+                // 確保 currentTime 重置為 0.0，這將觸發 timeline 對齊
+                currentTime = 0.0
+                
+                // Configure audio settings when new video is loaded
+                player.isMuted = false
+                player.volume = 1.0
+                
+                print("ContentView: Video loaded, currentTime set to \(currentTime), totalDuration: \(totalDuration)")
+            }
+        } catch {
+            print("Failed to load video duration: \(error)")
+            // Fallback for older iOS versions or if async loading fails
+            await MainActor.run {
+                player.replaceCurrentItem(with: playerItem)
+                totalDuration = asset.duration.seconds
+                markers = []
+                currentTime = 0.0
+                player.isMuted = false
+                player.volume = 1.0
+                print("ContentView: Video loaded (fallback), currentTime set to \(currentTime), totalDuration: \(totalDuration)")
+            }
+        }
+        
+        // 設置音訊會話
+        await configureAudioSession()
+        
+        // 等待一小段時間確保影片完全載入，然後隱藏載入動畫
+        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+        await MainActor.run {
+            showLoadingAnimation = false
+            thumbnailCache.isTranscoding = false
+            thumbnailCache.transcodingProgress = 0.0
+            print("ContentView: 影片載入完成，隱藏載入動畫")
+        }
+    }
+    
+    /// 配置音訊會話
+    private func configureAudioSession() async {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .moviePlayback, options: [.allowBluetooth, .allowBluetoothA2DP])
+            try audioSession.setActive(true)
+            print("ContentView: 音訊會話配置完成")
+        } catch {
+            print("ContentView: 配置音訊會話失敗: \(error)")
         }
     }
 }
@@ -235,10 +328,122 @@ struct ToolbarButton: View {
     }
 }
 
+// MARK: - 影片轉碼進度彈窗 (Video Transcoding Progress Popup)
+struct TranscodingProgressPopup: View {
+    let progress: Float
+    let onCancel: () -> Void
+    
+    @State private var rotationAngle: Double = 0
+    
+    var body: some View {
+        ZStack {
+            // 半透明背景遮罩
+            Color.black.opacity(0.7)
+                .edgesIgnoringSafeArea(.all)
+                .onTapGesture {
+                    // 點擊背景不關閉彈窗，防止意外取消轉碼
+                }
+            
+            // 進度彈窗主體
+            VStack(spacing: 30) {
+                // 標題區域
+                VStack(spacing: 8) {
+                    Text("正在處理影片")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                    
+                    Text("請稍候，影片正在載入中...")
+                        .font(.body)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                
+                // 轉圈圈動畫區域
+                VStack(spacing: 20) {
+                    ZStack {
+                        // 背景圓圈
+                        Circle()
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 4)
+                            .frame(width: 80, height: 80)
+                        
+                        // 旋轉的圓弧
+                        Circle()
+                            .trim(from: 0.0, to: 0.25)
+                            .stroke(
+                                LinearGradient(
+                                    gradient: Gradient(colors: [.blue, .cyan]),
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                style: StrokeStyle(lineWidth: 4, lineCap: .round)
+                            )
+                            .frame(width: 80, height: 80)
+                            .rotationEffect(Angle(degrees: rotationAngle))
+                            .animation(
+                                Animation.linear(duration: 1.0)
+                                    .repeatForever(autoreverses: false),
+                                value: rotationAngle
+                            )
+                        
+                        // 中央影片圖標
+                        Image(systemName: "video.badge.checkmark")
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundColor(.blue)
+                    }
+                    
+                    // 狀態文字
+                    Text("處理中...")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.white.opacity(0.8))
+                }
+                
+                // 取消按鈕
+                Button(action: onCancel) {
+                    HStack {
+                        Image(systemName: "xmark.circle")
+                            .font(.body)
+                        Text("取消")
+                            .font(.body)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundColor(.red)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(Color.red.opacity(0.1))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                    )
+                }
+                
+                // 提示文字
+                Text("處理過程中請勿關閉應用程式")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .padding(.top, 4)
+            }
+            .padding(40)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.black.opacity(0.95))
+                    .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+            )
+            .padding(.horizontal, 40)
+        }
+        .onAppear {
+            rotationAngle = 360
+        }
+    }
+}
+
 // MARK: - VideoPicker 修改
 // 功能: 選擇影片後清空舊的標記點
 struct VideoPicker: UIViewControllerRepresentable {
     var onFinish: (AVAsset?) -> Void
+    var onSelectionStart: (() -> Void)?
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration()
@@ -261,6 +466,11 @@ struct VideoPicker: UIViewControllerRepresentable {
         init(_ parent: VideoPicker) { self.parent = parent }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            // 立即顯示載入動畫（在 dismiss 之前）
+            if !results.isEmpty {
+                parent.onSelectionStart?()
+            }
+            
             picker.dismiss(animated: true)
             guard let provider = results.first?.itemProvider else {
                 parent.onFinish(nil)
