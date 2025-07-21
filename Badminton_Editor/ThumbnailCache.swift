@@ -527,21 +527,25 @@ class ThumbnailCache: ObservableObject {
     private func configureImageGenerator() {
         guard let generator = imageGenerator else { return }
         
-        generator.maximumSize = thumbnailSize
-        generator.requestedTimeToleranceBefore = CMTime.zero
-        generator.requestedTimeToleranceAfter = CMTime.zero
+        // 極速配置，減少品質要求以提升載入速度
+        generator.maximumSize = CGSize(width: 160, height: 90) // 大幅減小尺寸以提升速度
+        
+        // 設置較大的時間容差以加快生成速度
+        let fastTolerance = CMTime(seconds: 0.2, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = fastTolerance
+        generator.requestedTimeToleranceAfter = fastTolerance
+        
         generator.appliesPreferredTrackTransform = true
         
-        // 提升圖像品質設定
-        generator.apertureMode = .cleanAperture
+        // 快速模式設定，犧牲品質換取速度
+        generator.apertureMode = .productionAperture // 使用較快的模式
         
-        // 優化生成速度的設定
+        // 停用複雜處理
         if #available(iOS 16.0, *) {
-            // 使用較快的生成模式
             generator.videoComposition = nil // 減少處理複雜度
         }
         
-        print("ThumbnailCache: Image generator configured for optimal performance")
+        print("ThumbnailCache: Image generator configured for maximum speed")
     }
     
     // MARK: - Memory Management
@@ -579,26 +583,34 @@ class ThumbnailCache: ObservableObject {
         
         print("ThumbnailCache: Image generator configured successfully")
         
-        // 立即生成第一個縮圖 (0.0 時間點) 確保快速顯示
-        print("ThumbnailCache: Immediately generating first thumbnail at 0.0")
-        generateSingleThumbnail(for: 0.0) { image in
-            if let _ = image {
-                print("ThumbnailCache: First thumbnail (0.0) generated successfully")
-            } else {
-                print("ThumbnailCache: Failed to generate first thumbnail (0.0)")
-            }
-        }
-        
-        // 如果影片長度已知，也預先生成幾個關鍵時間點的縮圖
-        let duration = newAsset.duration.seconds
-        if duration > 0 && duration.isFinite {
-            let keyTimes: [TimeInterval] = [0.0, min(1.0, duration/4), min(2.0, duration/2), min(4.0, duration*0.75)]
-            print("ThumbnailCache: Pre-generating key thumbnails at times: \(keyTimes)")
+        // 延遲縮圖生成，優先載入播放器
+        Task {
+            try? await Task.sleep(nanoseconds: 100_000_000) // 延遲 0.1 秒
             
-            for time in keyTimes where time < duration {
-                generateSingleThumbnail(for: time) { image in
-                    if let _ = image {
-                        print("ThumbnailCache: Key thumbnail at \(time) generated successfully")
+            // 立即生成第一個縮圖 (0.0 時間點) 確保快速顯示
+            print("ThumbnailCache: Generating first thumbnail at 0.0")
+            generateSingleThumbnail(for: 0.0) { image in
+                if let _ = image {
+                    print("ThumbnailCache: First thumbnail (0.0) generated successfully")
+                } else {
+                    print("ThumbnailCache: Failed to generate first thumbnail (0.0)")
+                }
+            }
+            
+            // 延遲生成關鍵縮圖，不阻塞主要載入流程
+            try? await Task.sleep(nanoseconds: 200_000_000) // 再延遲 0.2 秒
+            
+            let duration = newAsset.duration.seconds
+            if duration > 0 && duration.isFinite {
+                // 減少預生成的縮圖數量
+                let keyTimes: [TimeInterval] = [min(1.0, duration/2)] // 只生成中間點縮圖
+                print("ThumbnailCache: Pre-generating minimal key thumbnails at times: \(keyTimes)")
+                
+                for time in keyTimes where time < duration {
+                    generateSingleThumbnail(for: time) { image in
+                        if let _ = image {
+                            print("ThumbnailCache: Key thumbnail at \(time) generated successfully")
+                        }
                     }
                 }
             }
