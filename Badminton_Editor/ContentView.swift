@@ -2,6 +2,7 @@ import SwiftUI
 import AVKit
 import AVFoundation
 import PhotosUI
+import Photos
 import VideoToolbox
 import UniformTypeIdentifiers
 
@@ -17,6 +18,8 @@ struct ContentView: View {
     @StateObject private var thumbnailCache = ThumbnailCache()
     @State private var showLoadingAnimation = false
     @State private var currentVideoURL: URL? // This will now store the *copied* video URL
+    @State private var photoLibraryAuthorizationStatus: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @State private var currentPHAsset: PHAsset? // Store the current PHAsset for direct access
 
     var body: some View {
         ZStack {
@@ -28,8 +31,14 @@ struct ContentView: View {
                 TopToolbarView(onExport: {
                     // 導出邏輯
                 }, onSelectVideo: {
-                    // Direct show video picker - no permissions needed for URL-based approach
-                    showVideoPicker = true
+                    // Check photo library permissions first
+                    requestPhotoLibraryPermissions { granted in
+                        if granted {
+                            showVideoPicker = true
+                        } else {
+                            print("Photo library access denied")
+                        }
+                    }
                 })
 
                 // MARK: - 3. 影片播放區 (Video Playback Area)
@@ -81,11 +90,11 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark) // 強制使用深色模式
         .sheet(isPresented: $showVideoPicker) {
-            VideoPicker(
-                onFinish: { temporaryURL in
-                    if let url = temporaryURL {
+            PHAssetVideoPicker(
+                onFinish: { phAsset in
+                    if let asset = phAsset {
                         Task {
-                            await handleVideoSelection(with: url)
+                            await handlePHAssetSelection(with: asset)
                         }
                     }
                 },
@@ -99,6 +108,78 @@ struct ContentView: View {
     }
     
     // MARK: - Video Loading Management
+
+    /// Request photo library permissions for direct PHAsset access
+    private func requestPhotoLibraryPermissions(completion: @escaping (Bool) -> Void) {
+        let currentStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        
+        switch currentStatus {
+        case .authorized, .limited:
+            completion(true)
+        case .denied, .restricted:
+            completion(false)
+        case .notDetermined:
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                DispatchQueue.main.async {
+                    self.photoLibraryAuthorizationStatus = status
+                    completion(status == .authorized || status == .limited)
+                }
+            }
+        @unknown default:
+            completion(false)
+        }
+    }
+
+    /// Handles the PHAsset selection, loading AVAsset directly without copying data
+    private func handlePHAssetSelection(with phAsset: PHAsset) async {
+        print("ContentView: Received PHAsset: \(phAsset.localIdentifier)")
+        
+        // Store the PHAsset for future reference
+        self.currentPHAsset = phAsset
+        
+        // Request AVAsset directly from PHAsset
+        await requestAVAssetFromPHAsset(phAsset)
+    }
+    
+    /// Request AVAsset directly from PHAsset using PHImageManager
+    private func requestAVAssetFromPHAsset(_ phAsset: PHAsset) async {
+        print("ContentView: Requesting AVAsset from PHAsset...")
+        
+        // Configure request options for high quality
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true // Allow iCloud downloads
+        options.deliveryMode = .highQualityFormat
+        options.version = .current
+        
+        // Show progress for iCloud downloads
+        options.progressHandler = { progress, error, _, _ in
+            DispatchQueue.main.async {
+                self.thumbnailCache.transcodingProgress = Float(progress)
+                if let error = error {
+                    print("ContentView: iCloud download error: \(error)")
+                }
+            }
+        }
+        
+        return await withCheckedContinuation { continuation in
+            PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { (avAsset, audioMix, info) in
+                DispatchQueue.main.async {
+                    if let asset = avAsset {
+                        print("ContentView: Successfully received AVAsset from PHImageManager")
+                        Task {
+                            await self.loadVideoAsset(asset)
+                        }
+                        continuation.resume()
+                    } else {
+                        print("ContentView: Failed to get AVAsset from PHAsset")
+                        self.showLoadingAnimation = false
+                        self.thumbnailCache.isTranscoding = false
+                        continuation.resume()
+                    }
+                }
+            }
+        }
+    }
 
     /// 1. Handles the video selection, now receiving a STABLE, copied URL.
     private func handleVideoSelection(with localURL: URL) async {
@@ -919,7 +1000,68 @@ struct TranscodingProgressPopup: View {
     }
 }
 
-// MARK: - VideoPicker: The definitive, working version
+// MARK: - PHAssetVideoPicker: Direct PHAsset access without copying data
+struct PHAssetVideoPicker: UIViewControllerRepresentable {
+    var onFinish: (PHAsset?) -> Void
+    var onSelectionStart: (() -> Void)?
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: PHPhotoLibrary.shared())
+        config.filter = .videos
+        config.selectionLimit = 1
+        config.preferredAssetRepresentationMode = .current // Use current version
+        
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let parent: PHAssetVideoPicker
+
+        init(_ parent: PHAssetVideoPicker) { 
+            self.parent = parent 
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            if !results.isEmpty {
+                parent.onSelectionStart?()
+            }
+            
+            picker.dismiss(animated: true)
+            
+            guard let result = results.first else {
+                parent.onFinish(nil)
+                return
+            }
+            
+            // Get the PHAsset identifier and fetch the PHAsset directly
+            if let assetIdentifier = result.assetIdentifier {
+                let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil)
+                if let phAsset = fetchResult.firstObject {
+                    print("PHAssetVideoPicker: Successfully retrieved PHAsset: \(phAsset.localIdentifier)")
+                    print("PHAssetVideoPicker: Asset duration: \(phAsset.duration) seconds")
+                    print("PHAssetVideoPicker: Asset dimensions: \(phAsset.pixelWidth)x\(phAsset.pixelHeight)")
+                    parent.onFinish(phAsset)
+                } else {
+                    print("PHAssetVideoPicker: Failed to fetch PHAsset with identifier: \(assetIdentifier)")
+                    parent.onFinish(nil)
+                }
+            } else {
+                print("PHAssetVideoPicker: No asset identifier available")
+                parent.onFinish(nil)
+            }
+        }
+    }
+}
+
+// MARK: - Legacy VideoPicker (kept for reference/fallback)
 // Fetches the temporary URL from the itemProvider.
 struct VideoPicker: UIViewControllerRepresentable {
     var onFinish: (URL?) -> Void
