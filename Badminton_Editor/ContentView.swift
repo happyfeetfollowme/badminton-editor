@@ -35,22 +35,25 @@ struct ContentView: View {
                         isPlaying ? player.play() : player.pause()
                     }
 
-                // MARK: - 4. 播放控制列 (Playback Controls)
-                PlaybackControlsView(
-                    player: $player,
-                    isPlaying: $isPlaying,
-                    currentTime: $currentTime,
-                    totalDuration: $totalDuration
-                )
-
-                // MARK: - 5. 時間軸容器 (Timeline Container)
-                TimelineContainerView(
-                    player: $player,
-                    currentTime: $currentTime,
-                    totalDuration: $totalDuration,
-                    markers: $markers
-                )
-                .frame(height: 120)
+                // MARK: - 4&5. 時間軸與播放控制整合區域 (Timeline and Playback Controls)
+                VStack(spacing: 8) {
+                    // 時間軸容器
+                    TimelineContainerView(
+                        player: $player,
+                        currentTime: $currentTime,
+                        totalDuration: $totalDuration,
+                        markers: $markers
+                    )
+                    .frame(height: 120)
+                    
+                    // 播放控制列 - 與 timeline 的 playhead 對齊
+                    PlaybackControlsView(
+                        player: $player,
+                        isPlaying: $isPlaying,
+                        currentTime: $currentTime,
+                        totalDuration: $totalDuration
+                    )
+                }
                 .padding(.vertical, 10)
 
                 MainActionToolbarView()
@@ -65,6 +68,9 @@ struct ContentView: View {
                     totalDuration = asset.duration.seconds
                     markers = []
                     
+                    // 確保 currentTime 重置為 0.0，這將觸發 timeline 對齊
+                    currentTime = 0.0
+                    
                     // Configure audio settings when new video is loaded
                     player.isMuted = false
                     player.volume = 1.0
@@ -76,6 +82,8 @@ struct ContentView: View {
                     } catch {
                         print("Failed to configure audio session: \(error)")
                     }
+                    
+                    print("ContentView: Video loaded, currentTime set to \(currentTime), totalDuration: \(totalDuration)")
                 }
             }
         }
@@ -118,15 +126,33 @@ struct PlaybackControlsView: View {
     @Binding var totalDuration: TimeInterval
     
     var body: some View {
-        HStack {
-            // 時間戳
-            Text("\(formatTime(currentTime)) / \(formatTime(totalDuration))")
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundColor(.gray)
+        HStack(spacing: 0) {
+            // 左側時間顯示
+            Text(formatTime(currentTime))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+                .frame(width: 60, alignment: .leading)
 
-            Spacer()
+            // 左側控制按鈕區域
+            HStack(spacing: 12) {
+                // 撤銷按鈕
+                Button(action: {}) { 
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.white)
+                }
+                
+                // 倒退按鈕 (新增)
+                Button(action: {}) { 
+                    Image(systemName: "gobackward.10")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.white)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 20)
 
-            // 播放/暫停按鈕
+            // 中央播放/暫停按鈕 - 對齊 playhead
             Button(action: {
                 guard player.currentItem != nil else { return }
                 
@@ -139,17 +165,45 @@ struct PlaybackControlsView: View {
                 }
             }) {
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title2)
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 48, height: 48)
+                    .background(Color.white.opacity(0.15))
+                    .clipShape(Circle())
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                    )
             }
+            .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
 
-            Spacer()
-
-            // 撤銷/重做按鈕
-            Button(action: {}) { Image(systemName: "arrow.uturn.backward") }
-            Button(action: {}) { Image(systemName: "arrow.uturn.forward") }
+            // 右側控制按鈕區域
+            HStack(spacing: 12) {
+                // 快進按鈕 (新增)
+                Button(action: {}) { 
+                    Image(systemName: "goforward.10")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.white)
+                }
+                
+                // 重做按鈕
+                Button(action: {}) { 
+                    Image(systemName: "arrow.uturn.forward")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.white)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 20)
+            
+            // 右側總時長顯示
+            Text(formatTime(totalDuration))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+                .frame(width: 60, alignment: .trailing)
         }
-        .foregroundColor(.white)
-        .padding(.horizontal)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 }
 
@@ -638,12 +692,19 @@ struct VideoThumbnailTimelineView: View {
 
         let imageGenerator = AVAssetImageGenerator(asset: asset)
         imageGenerator.appliesPreferredTrackTransform = true
-        imageGenerator.maximumSize = CGSize(width: 160, height: 90)
+        imageGenerator.maximumSize = CGSize(width: 320, height: 180) // 提升解析度到 2x
         
-        // Allow a small tolerance to find the nearest valid frame, preventing black thumbnails
-        let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
-        imageGenerator.requestedTimeToleranceBefore = tolerance
-        imageGenerator.requestedTimeToleranceAfter = tolerance
+        // 提升圖像品質設定
+        imageGenerator.apertureMode = .cleanAperture
+        if #available(iOS 16.0, *) {
+            imageGenerator.requestedTimeToleranceAfter = CMTime(seconds: 0.05, preferredTimescale: 600)
+            imageGenerator.requestedTimeToleranceBefore = CMTime(seconds: 0.05, preferredTimescale: 600)
+        } else {
+            // Allow a small tolerance to find the nearest valid frame, preventing black thumbnails
+            let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
+            imageGenerator.requestedTimeToleranceBefore = tolerance
+            imageGenerator.requestedTimeToleranceAfter = tolerance
+        }
 
         let timeValues = timesToGenerate.map { NSValue(time: CMTime(seconds: $0, preferredTimescale: 600)) }
         
@@ -668,7 +729,7 @@ struct VideoThumbnailTimelineView: View {
     }
     
     private func generateDefaultThumbnail() -> UIImage {
-        let size = CGSize(width: 160, height: 90)
+        let size = CGSize(width: 320, height: 180) // 提升解析度到 2x
         UIGraphicsBeginImageContextWithOptions(size, false, 0)
         UIColor.darkGray.setFill()
         UIRectFill(CGRect(origin: .zero, size: size))

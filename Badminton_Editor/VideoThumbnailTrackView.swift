@@ -75,22 +75,100 @@ struct VideoThumbnailTrackView: View {
                 .frame(width: boundaryPadding)
         }
         .onAppear {
+            print("VideoThumbnailTrackView onAppear:")
+            print("- player.currentItem exists: \(player.currentItem != nil)")
+            print("- totalDuration: \(totalDuration)")
+            print("- pixelsPerSecond: \(pixelsPerSecond)")
+            
             setupThumbnailCache()
             updateThumbnailConfiguration()
             setupZoomChangeObserver()
+            
+            // 如果已經有影片，立即生成縮圖
+            if player.currentItem != nil {
+                print("VideoThumbnailTrackView: onAppear - generating thumbnails")
+                if totalDuration > 0 && pixelsPerSecond > 0 {
+                    generateInitialThumbnails()
+                } else {
+                    // 如果條件不滿足，使用強制生成
+                    forceGenerateInitialThumbnails()
+                }
+            }
+            
+            // 調試：檢查對齊設定
+            print("VideoThumbnailTrackView onAppear alignment check:")
+            print("- baseOffset: \(baseOffset)")
+            print("- contentOffset: \(contentOffset)")
+            print("- screenWidth: \(screenWidth)")
+            
+            // 計算時間 0.0 應該出現的螢幕位置
+            let time0Position = baseOffset + contentOffset
+            let screenCenter = screenWidth / 2
+            print("- Time 0.0 position: \(time0Position)")
+            print("- Screen center: \(screenCenter)")
+            print("- Offset from center: \(time0Position - screenCenter)")
         }
         .onDisappear {
             removeZoomChangeObserver()
         }
-        .onChange(of: pixelsPerSecond) { _, _ in
+        .onChange(of: pixelsPerSecond) { _, newPixelsPerSecond in
+            print("VideoThumbnailTrackView: pixelsPerSecond changed to \(newPixelsPerSecond)")
             updateThumbnailConfiguration()
+            // 縮放改變後立即更新可見縮圖
+            if !thumbnailTimes.isEmpty {
+                updateVisibleThumbnails()
+            } else if totalDuration > 0 && newPixelsPerSecond > 0 {
+                // 如果還沒有 thumbnailTimes，但現在條件滿足了，立即生成
+                forceGenerateInitialThumbnails()
+            }
         }
-        .onChange(of: totalDuration) { _, _ in
+        .onChange(of: totalDuration) { _, newDuration in
+            print("VideoThumbnailTrackView: totalDuration changed to \(newDuration)")
             updateThumbnailConfiguration()
+            // 時長改變後立即生成初始縮圖
+            if newDuration > 0 {
+                if pixelsPerSecond > 0 {
+                    generateInitialThumbnails()
+                } else {
+                    // 如果 pixelsPerSecond 還沒設定，使用強制生成
+                    forceGenerateInitialThumbnails()
+                }
+            }
         }
         .onChange(of: player.currentItem) { _, _ in
+            print("VideoThumbnailTrackView: player.currentItem changed")
             setupThumbnailCache()
-            updateThumbnailConfiguration()
+            
+            // 延遲一點時間確保 totalDuration 已經被設定
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                print("VideoThumbnailTrackView: Starting thumbnail generation after item change")
+                print("- totalDuration: \(self.totalDuration)")
+                print("- pixelsPerSecond: \(self.pixelsPerSecond)")
+                
+                // 更新縮圖配置並立即生成
+                self.updateThumbnailConfiguration()
+                
+                // 強制生成初始縮圖，即使其他條件不滿足
+                self.forceGenerateInitialThumbnails()
+                
+                // 檢查對齊狀況
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    print("VideoThumbnailTrackView post-load alignment check:")
+                    print("- baseOffset: \(self.baseOffset)")
+                    print("- contentOffset: \(self.contentOffset)")
+                    print("- screenWidth: \(self.screenWidth)")
+                    
+                    let time0Position = self.baseOffset + self.contentOffset
+                    let screenCenter = self.screenWidth / 2
+                    print("- Time 0.0 position: \(time0Position)")
+                    print("- Screen center: \(screenCenter)")
+                    print("- Alignment error: \(time0Position - screenCenter)")
+                    
+                    if abs(time0Position - screenCenter) > 1.0 {
+                        print("WARNING: Time 0.0 is not aligned with playhead!")
+                    }
+                }
+            }
         }
         .onChange(of: contentOffset) { _, _ in
             updateVisibleThumbnails()
@@ -222,10 +300,18 @@ struct VideoThumbnailTrackView: View {
         let minInterval: TimeInterval = 0.5 // Minimum 0.5 seconds between thumbnails
         let actualInterval = max(minInterval, timePerThumbnail)
         
-        // Generate thumbnail times
-        let numberOfThumbnails = Int(ceil(totalDuration / actualInterval))
-        let newThumbnailTimes = (0..<numberOfThumbnails).map { i in
-            Double(i) * actualInterval
+        // Generate thumbnail times starting from exactly 0.0 to align with playhead
+        var newThumbnailTimes: [TimeInterval] = []
+        var currentTime: TimeInterval = 0.0
+        
+        while currentTime < totalDuration {
+            newThumbnailTimes.append(currentTime)
+            currentTime += actualInterval
+        }
+        
+        // 確保第一個縮圖始終從 0.0 開始，與 playhead 對齊
+        if newThumbnailTimes.first != 0.0 {
+            newThumbnailTimes.insert(0.0, at: 0)
         }
         
         // Update thumbnail times
@@ -323,13 +409,108 @@ struct VideoThumbnailTrackView: View {
         thumbnailCache.setAsset(asset)
     }
     
+    /// Generate initial thumbnails immediately after video is loaded
+    /// This ensures thumbnails appear quickly, especially at the beginning
+    private func generateInitialThumbnails() {
+        guard totalDuration > 0, pixelsPerSecond > 0, !thumbnailTimes.isEmpty else {
+            print("VideoThumbnailTrackView: Cannot generate initial thumbnails - invalid configuration")
+            return
+        }
+        
+        print("VideoThumbnailTrackView: thumbnailTimes = \(Array(thumbnailTimes.prefix(10)))")
+        
+        // 確保第一個縮圖一定是 0.0 (與 playhead 對齊)
+        var priorityTimes: [TimeInterval] = []
+        
+        // 強制添加 0.0，無論是否在 thumbnailTimes 中
+        priorityTimes.append(0.0)
+        
+        // 添加開頭的幾個縮圖
+        let initialThumbnailCount = min(5, thumbnailTimes.count)
+        let initialTimes = Array(thumbnailTimes.prefix(initialThumbnailCount))
+        priorityTimes.append(contentsOf: initialTimes)
+        
+        // 移除重複並排序
+        priorityTimes = Array(Set(priorityTimes)).sorted()
+        
+        print("VideoThumbnailTrackView: Generating initial thumbnails for times: \(priorityTimes)")
+        print("VideoThumbnailTrackView: First thumbnail time should be 0.0: \(priorityTimes.first == 0.0)")
+        
+        // 優先生成 0.0 時間的縮圖，確保與 playhead 對齊
+        for time in priorityTimes {
+            thumbnailCache.generateSingleThumbnail(for: time) { image in
+                if let _ = image {
+                    print("VideoThumbnailTrackView: Successfully generated initial thumbnail for time: \(time)")
+                } else {
+                    print("VideoThumbnailTrackView: Failed to generate initial thumbnail for time: \(time)")
+                }
+            }
+        }
+        
+        // 同時生成可見區域的縮圖
+        updateVisibleThumbnails()
+    }
+    
+    /// Force generate initial thumbnails even if conditions are not perfect
+    /// This is called when video is first loaded to ensure immediate thumbnail display
+    private func forceGenerateInitialThumbnails() {
+        guard let currentItem = player.currentItem else {
+            print("VideoThumbnailTrackView: No current item, cannot generate thumbnails")
+            return
+        }
+        
+        let asset = currentItem.asset
+        let videoDuration = asset.duration.seconds
+        
+        print("VideoThumbnailTrackView: Force generating initial thumbnails")
+        print("- Asset duration: \(videoDuration)")
+        print("- totalDuration parameter: \(totalDuration)")
+        print("- pixelsPerSecond: \(pixelsPerSecond)")
+        
+        // 如果 totalDuration 還沒設定，使用 asset.duration
+        let actualDuration = totalDuration > 0 ? totalDuration : videoDuration
+        let actualPixelsPerSecond = pixelsPerSecond > 0 ? pixelsPerSecond : 50.0 // 預設值
+        
+        // 生成基本的縮圖時間點
+        var forceThumbnailTimes: [TimeInterval] = [0.0] // 一定要有 0.0
+        
+        if actualDuration > 0 {
+            // 生成每 2 秒一個縮圖用於初始顯示
+            let interval: TimeInterval = 2.0
+            var time: TimeInterval = interval
+            while time < actualDuration && forceThumbnailTimes.count < 10 {
+                forceThumbnailTimes.append(time)
+                time += interval
+            }
+        }
+        
+        print("VideoThumbnailTrackView: Force generating thumbnails for times: \(forceThumbnailTimes)")
+        
+        // 立即生成這些縮圖
+        for time in forceThumbnailTimes {
+            print("VideoThumbnailTrackView: Requesting forced thumbnail for time: \(time)")
+            thumbnailCache.generateSingleThumbnail(for: time) { image in
+                if let _ = image {
+                    print("VideoThumbnailTrackView: Successfully generated forced thumbnail for time: \(time)")
+                    
+                    // 強制 UI 更新
+                    DispatchQueue.main.async {
+                        // 這會觸發 View 重新繪製
+                    }
+                } else {
+                    print("VideoThumbnailTrackView: Failed to generate forced thumbnail for time: \(time)")
+                }
+            }
+        }
+    }
+    
 
     
     /// Generate a fallback thumbnail with time-specific information
     /// - Parameter time: The time this thumbnail represents
     /// - Returns: A fallback thumbnail image
     private func generateFallbackThumbnail(for time: TimeInterval) -> UIImage {
-        let size = CGSize(width: 160, height: 90) // 16:9 aspect ratio
+        let size = CGSize(width: 320, height: 180) // 16:9 aspect ratio, 2x resolution
         
         UIGraphicsBeginImageContextWithOptions(size, false, 0)
         defer { UIGraphicsEndImageContext() }
@@ -394,13 +575,19 @@ struct VideoThumbnailTrackView: View {
     /// - Parameter time: The time to get thumbnail for
     /// - Returns: UIImage if available, nil otherwise
     private func getThumbnail(for time: TimeInterval) -> UIImage? {
-        let thumbnail = thumbnailCache.getThumbnail(for: time)
-        if thumbnail != nil {
-            print("VideoThumbnailTrackView: Found thumbnail for time: \(time)")
+        // 首先檢查 published thumbnails (即時更新)
+        if let publishedThumbnail = thumbnailCache.thumbnails[time] {
+            return publishedThumbnail
+        }
+        
+        // 然後檢查快取
+        let cachedThumbnail = thumbnailCache.getThumbnail(for: time)
+        if cachedThumbnail != nil {
+            print("VideoThumbnailTrackView: Found cached thumbnail for time: \(time)")
         } else {
             print("VideoThumbnailTrackView: No thumbnail found for time: \(time)")
         }
-        return thumbnail
+        return cachedThumbnail
     }
     
     /// Generate thumbnail for a specific time using the enhanced cache system
@@ -425,7 +612,7 @@ struct VideoThumbnailTrackView: View {
     /// Generate a fallback thumbnail when video frame extraction fails
     /// - Returns: A default thumbnail image
     private func generateFallbackThumbnail() -> UIImage {
-        let size = CGSize(width: 160, height: 90) // 16:9 aspect ratio
+        let size = CGSize(width: 320, height: 180) // 16:9 aspect ratio, 2x resolution
         
         UIGraphicsBeginImageContextWithOptions(size, false, 0)
         defer { UIGraphicsEndImageContext() }

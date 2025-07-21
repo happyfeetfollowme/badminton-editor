@@ -124,17 +124,17 @@ struct TimelineContainerView: View {
     
     @ViewBuilder
     private func playbackMarkerOverlay(geometry: GeometryProxy) -> some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 2) {
             // Current time display above marker - show scrubbing time when dragging
             let displayTime = timelineState.isDragging ? calculateScrubbingTime() : currentTime
             Text(formatTime(displayTime))
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundColor(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(timelineState.isDragging ? Color.blue.opacity(0.8) : Color.black.opacity(0.8))
-                .cornerRadius(4)
-                .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(timelineState.isDragging ? Color.blue.opacity(0.9) : Color.black.opacity(0.9))
+                .cornerRadius(6)
+                .shadow(color: .black.opacity(0.4), radius: 3, x: 0, y: 2)
                 .scaleEffect(timelineState.isDragging ? 1.1 : 1.0)
                 .animation(.easeInOut(duration: 0.2), value: timelineState.isDragging)
             
@@ -154,9 +154,9 @@ struct TimelineContainerView: View {
     private func calculateScrubbingTime() -> TimeInterval {
         if timelineState.isDragging && dragStartTime > 0 {
             // Calculate based on current drag state
-            // Positive drag (right) = forward in time, negative drag (left) = backward in time
+            // Positive drag (right) = backward in time, negative drag (left) = forward in time
             let timeOffset = Double(lastDragTranslation.width / timelineState.pixelsPerSecond)
-            let scrubbingTime = dragStartTime + timeOffset
+            let scrubbingTime = dragStartTime - timeOffset  // Note: minus sign for natural scrolling
             return handleTimelineBoundaries(scrubbingTime, totalDuration: totalDuration)
         }
         return currentTime
@@ -259,6 +259,18 @@ struct TimelineContainerView: View {
     /// Setup initial timeline state
     private func setupTimelineState() {
         timelineState.reset()
+        
+        // 立即設定正確的 contentOffset，讓當前時間對齊 playhead
+        DispatchQueue.main.async {
+            let screenWidth = UIScreen.main.bounds.width
+            let correctOffset = self.timelineState.calculateOffsetToCenter(
+                time: self.currentTime,
+                screenWidth: screenWidth,
+                baseOffset: 500
+            )
+            self.timelineState.contentOffset = correctOffset
+            print("TimelineContainerView: Set initial contentOffset to \(correctOffset) for currentTime \(self.currentTime)")
+        }
     }
     
     /// Update timeline position when current time changes during playback
@@ -293,6 +305,18 @@ struct TimelineContainerView: View {
         // Handle edge case: extremely long duration
         if newDuration > 86400 { // More than 24 hours
             print("Warning: Extremely long duration detected: \(newDuration) seconds")
+        }
+        
+        // 立即設定正確的 contentOffset，讓時間 0.0 對齊 playhead
+        DispatchQueue.main.async {
+            let screenWidth = UIScreen.main.bounds.width
+            let correctOffset = self.timelineState.calculateOffsetToCenter(
+                time: 0.0, // 確保時間 0.0 對齊
+                screenWidth: screenWidth,
+                baseOffset: 500
+            )
+            self.timelineState.contentOffset = correctOffset
+            print("TimelineContainerView: Set initial contentOffset to \(correctOffset) for time 0.0")
         }
     }
     
@@ -366,10 +390,11 @@ struct TimelineContainerView: View {
         }
         
         // Calculate target time based on drag distance from start
-        // Positive drag (right) = forward in time, negative drag (left) = backward in time
+        // Positive drag (right) = backward in time, negative drag (left) = forward in time
+        // This creates a natural scrolling behavior where dragging right shows earlier content
         let totalDragDistance = value.translation.width
         let timeOffset = Double(totalDragDistance / timelineState.pixelsPerSecond)
-        let rawTargetTime = dragStartTime + timeOffset
+        let rawTargetTime = dragStartTime - timeOffset  // Note: minus sign for natural scrolling
         let targetTime = handleTimelineBoundaries(rawTargetTime, totalDuration: totalDuration)
         
         // Handle edge case: extreme drag values
@@ -408,7 +433,7 @@ struct TimelineContainerView: View {
         if totalDuration > 0 {
             let totalDragDistance = value.translation.width
             let timeOffset = Double(totalDragDistance / timelineState.pixelsPerSecond)
-            let finalTime = handleTimelineBoundaries(dragStartTime + timeOffset, totalDuration: totalDuration)
+            let finalTime = handleTimelineBoundaries(dragStartTime - timeOffset, totalDuration: totalDuration)  // Note: minus sign for natural scrolling
             
             // Final seek without debouncing for precision, with error handling
             timelineState.performImmediateSeek(to: finalTime, player: player) { success, error in

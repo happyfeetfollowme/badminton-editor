@@ -23,8 +23,8 @@ class ThumbnailCache: ObservableObject {
     @Published var isGenerating: Bool = false
     
     // Cache configuration
-    private let maxCacheSize: Int = 100 // Maximum number of thumbnails to cache
-    private let thumbnailSize = CGSize(width: 120, height: 68) // 16:9 aspect ratio
+    private let maxCacheSize: Int = 80 // 減少快取數量以因應更高解析度
+    private let thumbnailSize = CGSize(width: 240, height: 135) // 16:9 aspect ratio, 2x resolution
     
     // MARK: - Initialization
     
@@ -61,6 +61,17 @@ class ThumbnailCache: ObservableObject {
         generator.requestedTimeToleranceBefore = CMTime.zero
         generator.requestedTimeToleranceAfter = CMTime.zero
         generator.appliesPreferredTrackTransform = true
+        
+        // 提升圖像品質設定
+        generator.apertureMode = .cleanAperture
+        
+        // 優化生成速度的設定
+        if #available(iOS 16.0, *) {
+            // 使用較快的生成模式
+            generator.videoComposition = nil // 減少處理複雜度
+        }
+        
+        print("ThumbnailCache: Image generator configured for optimal performance")
     }
     
     // MARK: - Memory Management
@@ -97,6 +108,31 @@ class ThumbnailCache: ObservableObject {
         configureImageGenerator()
         
         print("ThumbnailCache: Image generator configured successfully")
+        
+        // 立即生成第一個縮圖 (0.0 時間點) 確保快速顯示
+        print("ThumbnailCache: Immediately generating first thumbnail at 0.0")
+        generateSingleThumbnail(for: 0.0) { image in
+            if let _ = image {
+                print("ThumbnailCache: First thumbnail (0.0) generated successfully")
+            } else {
+                print("ThumbnailCache: Failed to generate first thumbnail (0.0)")
+            }
+        }
+        
+        // 如果影片長度已知，也預先生成幾個關鍵時間點的縮圖
+        let duration = newAsset.duration.seconds
+        if duration > 0 && duration.isFinite {
+            let keyTimes: [TimeInterval] = [0.0, min(1.0, duration/4), min(2.0, duration/2), min(4.0, duration*0.75)]
+            print("ThumbnailCache: Pre-generating key thumbnails at times: \(keyTimes)")
+            
+            for time in keyTimes where time < duration {
+                generateSingleThumbnail(for: time) { image in
+                    if let _ = image {
+                        print("ThumbnailCache: Key thumbnail at \(time) generated successfully")
+                    }
+                }
+            }
+        }
     }
     
     // MARK: - Thumbnail Retrieval
@@ -383,6 +419,9 @@ class ThumbnailCache: ObservableObject {
         let configuredGenerator = AVAssetImageGenerator(asset: asset)
         configuredGenerator.appliesPreferredTrackTransform = true
         configuredGenerator.maximumSize = thumbnailSize
+        
+        // 提升圖像品質設定
+        configuredGenerator.apertureMode = .cleanAperture
         
         // Set tolerance based on priority
         let tolerance: CMTime
