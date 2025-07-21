@@ -2,6 +2,245 @@ import Foundation
 import AVFoundation
 import UIKit
 import SwiftUI
+import Photos
+import VideoToolbox
+
+// MARK: - PHAsset Support (iOS Photo Library)
+
+extension ThumbnailCache {
+    /// 設定 PHAsset，並自動處理 iCloud、HEVC、錯誤診斷與日誌
+    func setPHAsset(_ phAsset: PHAsset) {
+        print("ThumbnailCache: setPHAsset called. localIdentifier=\(phAsset.localIdentifier), mediaType=\(phAsset.mediaType.rawValue), duration=\(phAsset.duration)")
+
+        // 先清空快取
+        self.clearCache()
+
+        // 取得 AVAsset
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true // 允許自動下載 iCloud 影片
+        options.deliveryMode = .highQualityFormat
+        options.version = .current
+
+        PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { [weak self] avAsset, audioMix, info in
+            guard let self = self else { return }
+
+            if let info = info {
+                if let isInCloud = info[PHImageResultIsInCloudKey] as? Bool, isInCloud {
+                    print("ThumbnailCache: PHAsset is in iCloud, will auto-download if needed.")
+                }
+                if let cancelled = info[PHImageCancelledKey] as? Bool, cancelled {
+                    print("ThumbnailCache: PHAsset request was cancelled.")
+                }
+                if let error = info[PHImageErrorKey] as? NSError {
+                    print("ThumbnailCache: PHAsset request error: \(error.localizedDescription)")
+                }
+            }
+
+            guard let avAsset = avAsset else {
+                print("ThumbnailCache: Failed to get AVAsset from PHAsset. info=\(String(describing: info))")
+                
+                // 嘗試使用 PHImageManager 的其他選項作為備用方案
+                self.tryAlternativeVideoRequest(for: phAsset)
+                return
+            }
+
+            Task {
+                // 檢查 AVAsset 是否可播放、可讀取
+                if let urlAsset = avAsset as? AVURLAsset {
+                    print("ThumbnailCache: AVURLAsset url=\(urlAsset.url)")
+                    print("ThumbnailCache: URL scheme=\(urlAsset.url.scheme ?? "nil"), pathExtension=\(urlAsset.url.pathExtension)")
+                }
+
+                // 檢查 HEVC 支援
+                let hevcSupported = self.checkHEVCSupport()
+                print("ThumbnailCache: HEVC hardware decode supported: \(hevcSupported)")
+
+                // duration (async for iOS 16+)
+                var durationSeconds: Double = 0
+                if #available(iOS 16.0, *) {
+                    do {
+                        let duration = try await avAsset.load(.duration)
+                        durationSeconds = duration.seconds
+                    } catch {
+                        print("ThumbnailCache: Failed to load duration: \(error)")
+                        print("ThumbnailCache: Trying alternative asset loading...")
+                        self.tryAlternativeVideoRequest(for: phAsset)
+                        return
+                    }
+                } else {
+                    durationSeconds = avAsset.duration.seconds
+                }
+
+                print("ThumbnailCache: AVAsset duration=\(durationSeconds), isPlayable=\(avAsset.isPlayable), isReadable=\(avAsset.isReadable)")
+
+                // 列出所有 video track 的 codec type
+                var videoTracks: [AVAssetTrack] = []
+                if #available(iOS 16.0, *) {
+                    do {
+                        videoTracks = try await avAsset.loadTracks(withMediaType: .video)
+                    } catch {
+                        print("ThumbnailCache: Failed to load video tracks: \(error)")
+                    }
+                } else {
+                    videoTracks = avAsset.tracks(withMediaType: .video)
+                }
+                for (idx, track) in videoTracks.enumerated() {
+                    var dimensions = CGSize.zero
+                    if #available(iOS 16.0, *) {
+                        do {
+                            dimensions = try await track.load(.naturalSize)
+                        } catch {
+                            print("ThumbnailCache: Failed to load naturalSize: \(error)")
+                        }
+                    } else {
+                        dimensions = track.naturalSize
+                    }
+                    var formatDescriptions: [CMFormatDescription] = []
+                    if #available(iOS 16.0, *) {
+                        do {
+                            let rawFormats = try await track.load(.formatDescriptions)
+                            formatDescriptions = rawFormats.compactMap { $0 as? CMFormatDescription }
+                        } catch {
+                            print("ThumbnailCache: Failed to load formatDescriptions: \(error)")
+                        }
+                    } else {
+                        formatDescriptions = track.formatDescriptions as? [CMFormatDescription] ?? []
+                    }
+                    if let formatDesc = formatDescriptions.first {
+                        let codecType = CMFormatDescriptionGetMediaSubType(formatDesc)
+                        let codecStr = self.FourCharCodeToString(codecType)
+                        print("ThumbnailCache: VideoTrack[\(idx)] codec=\(codecStr), dimensions=\(dimensions)")
+                        
+                        // 特別檢查 HEVC 格式
+                        if codecStr == "hvc1" || codecStr == "hev1" {
+                            print("ThumbnailCache: ⚠️ HEVC video detected! This may cause issues on some devices.")
+                            print("ThumbnailCache: Consider transcoding to H.264 for better compatibility.")
+                            
+                            // 檢查是否可以生成縮圖
+                            self.testThumbnailGeneration(for: avAsset, at: 1.0)
+                        }
+                    }
+                }
+
+                // 檢查 AVAsset 是否真的可用
+                if !avAsset.isPlayable || !avAsset.isReadable {
+                    print("ThumbnailCache: ❌ AVAsset is not playable or readable")
+                    self.tryAlternativeVideoRequest(for: phAsset)
+                    return
+                }
+
+                // 設定 asset 並生成縮圖
+                DispatchQueue.main.async {
+                    self.setAsset(avAsset)
+                }
+            }
+        }
+    }
+
+    /// FourCharCode 轉 String (for codec type)
+    func FourCharCodeToString(_ code: FourCharCode) -> String {
+        let n = Int(code)
+        var s: String = ""
+        s.append(Character(UnicodeScalar((n >> 24) & 255)!))
+        s.append(Character(UnicodeScalar((n >> 16) & 255)!))
+        s.append(Character(UnicodeScalar((n >> 8) & 255)!))
+        s.append(Character(UnicodeScalar(n & 255)!))
+        return s
+    }
+    
+    /// 檢查 HEVC 硬體解碼支援
+    private func checkHEVCSupport() -> Bool {
+        // 檢查設備是否支援 HEVC 硬體解碼
+        if #available(iOS 11.0, *) {
+            return VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)
+        }
+        return false
+    }
+    
+    /// 測試縮圖生成是否可行
+    private func testThumbnailGeneration(for asset: AVAsset, at time: TimeInterval) {
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.maximumSize = CGSize(width: 160, height: 90) // 較小尺寸測試
+        generator.appliesPreferredTrackTransform = true
+        
+        let cmTime = CMTime(seconds: time, preferredTimescale: 600)
+        
+        DispatchQueue.global(qos: .utility).async {
+            generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: cmTime)]) { _, cgImage, _, result, error in
+                DispatchQueue.main.async {
+                    if let error = error {
+                        print("ThumbnailCache: ❌ HEVC thumbnail test failed: \(error.localizedDescription)")
+                    } else if cgImage != nil {
+                        print("ThumbnailCache: ✅ HEVC thumbnail test succeeded")
+                    } else {
+                        print("ThumbnailCache: ⚠️ HEVC thumbnail test returned no image")
+                    }
+                }
+            }
+        }
+    }
+    
+    /// 嘗試替代的影片請求方法
+    private func tryAlternativeVideoRequest(for phAsset: PHAsset) {
+        print("ThumbnailCache: Trying alternative video request with compatibility mode...")
+        
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .mediumQualityFormat // 降低品質要求
+        options.version = .current
+        
+        // 嘗試請求相容格式
+        PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { [weak self] avAsset, audioMix, info in
+            guard let self = self else { return }
+            
+            if let avAsset = avAsset {
+                print("ThumbnailCache: ✅ Alternative request succeeded")
+                DispatchQueue.main.async {
+                    self.setAsset(avAsset)
+                }
+            } else {
+                print("ThumbnailCache: ❌ Alternative request also failed")
+                
+                // 最後嘗試：使用 PHImageManager 直接請求圖片作為縮圖
+                self.tryImageFallback(for: phAsset)
+            }
+        }
+    }
+    
+    /// 最後備用方案：使用靜態圖片作為縮圖
+    private func tryImageFallback(for phAsset: PHAsset) {
+        print("ThumbnailCache: Using image fallback for unsupported video")
+        
+        let options = PHImageRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .exact
+        
+        let targetSize = CGSize(width: 240, height: 135)
+        
+        PHImageManager.default().requestImage(
+            for: phAsset,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: options
+        ) { [weak self] image, info in
+            guard let self = self, let image = image else {
+                print("ThumbnailCache: ❌ Image fallback also failed")
+                return
+            }
+            
+            print("ThumbnailCache: ✅ Using static image as video thumbnail")
+            
+            // 將靜態圖片作為 0.0 時間點的縮圖
+            DispatchQueue.main.async {
+                let key = NSNumber(value: 0.0)
+                let cost = Int(self.thumbnailSize.width * self.thumbnailSize.height * 4)
+                self.cache.setObject(image, forKey: key, cost: cost)
+                self.thumbnails[0.0] = image
+            }
+        }
+    }
+}
 
 /// Priority levels for thumbnail generation to optimize performance
 enum ThumbnailGenerationPriority {
@@ -707,39 +946,5 @@ class ThumbnailCache: ObservableObject {
         }
         
         print("Cache limits adjusted for zoom level: \(pixelsPerSecond)x")
-    }
-}
-
-// MARK: - Extensions
-
-extension ThumbnailCache {
-    /// Convenience method to get thumbnail with fallback placeholder
-    func getThumbnailOrPlaceholder(for time: TimeInterval) -> UIImage {
-        if let thumbnail = getThumbnail(for: time) {
-            return thumbnail
-        }
-        
-        // Generate placeholder image
-        return createPlaceholderImage()
-    }
-    
-    private func createPlaceholderImage() -> UIImage {
-        let renderer = UIGraphicsImageRenderer(size: thumbnailSize)
-        return renderer.image { context in
-            // Gray background
-            UIColor.systemGray4.setFill()
-            context.fill(CGRect(origin: .zero, size: thumbnailSize))
-            
-            // Add film strip icon or similar placeholder
-            UIColor.systemGray2.setFill()
-            let iconSize: CGFloat = 24
-            let iconRect = CGRect(
-                x: (thumbnailSize.width - iconSize) / 2,
-                y: (thumbnailSize.height - iconSize) / 2,
-                width: iconSize,
-                height: iconSize
-            )
-            context.fill(iconRect)
-        }
     }
 }
