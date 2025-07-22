@@ -75,15 +75,10 @@ struct ContentView: View {
             }
             
             // MARK: - 影片載入進度 Popup (Video Loading Progress Popup)
-            if thumbnailCache.isTranscoding || showLoadingAnimation {
-                TranscodingProgressPopup(
-                    progress: thumbnailCache.transcodingProgress,
+            if showLoadingAnimation {
+                BasicLoadingIndicator(
                     onCancel: {
-                        if thumbnailCache.isTranscoding {
-                            thumbnailCache.cancelTranscoding()
-                        } else {
-                            showLoadingAnimation = false
-                        }
+                        showLoadingAnimation = false
                     }
                 )
             }
@@ -100,8 +95,6 @@ struct ContentView: View {
                 },
                 onSelectionStart: {
                     showLoadingAnimation = true
-                    thumbnailCache.isTranscoding = true
-                    thumbnailCache.transcodingProgress = 0.0
                 }
             )
         }
@@ -159,7 +152,6 @@ struct ContentView: View {
         // Show progress for iCloud downloads
         options.progressHandler = { progress, error, _, _ in
             DispatchQueue.main.async {
-                self.thumbnailCache.transcodingProgress = Float(progress)
                 if let error = error {
                     print("ContentView: iCloud download error: \(error)")
                 }
@@ -178,7 +170,6 @@ struct ContentView: View {
                     } else {
                         print("ContentView: Failed to get AVAsset from PHAsset")
                         self.showLoadingAnimation = false
-                        self.thumbnailCache.isTranscoding = false
                         continuation.resume()
                     }
                 }
@@ -222,8 +213,6 @@ struct ContentView: View {
         await MainActor.run {
             if !showLoadingAnimation {
                 showLoadingAnimation = true
-                thumbnailCache.isTranscoding = true
-                thumbnailCache.transcodingProgress = 0.1 // 立即顯示一些進度
             }
         }
         
@@ -241,7 +230,6 @@ struct ContentView: View {
         let duration = await durationTask
         await MainActor.run {
             totalDuration = duration
-            thumbnailCache.transcodingProgress = 0.8 // 更新進度
             print("ContentView: 極速載入完成 - 時長: \(totalDuration)秒")
         }
         
@@ -257,8 +245,6 @@ struct ContentView: View {
         try? await Task.sleep(nanoseconds: 25_000_000) // 只等待 0.025 秒
         await MainActor.run {
             showLoadingAnimation = false
-            thumbnailCache.isTranscoding = false
-            thumbnailCache.transcodingProgress = 1.0
             print("ContentView: 極速載入動畫隱藏，總耗時 < 0.05秒")
         }
     }
@@ -894,9 +880,8 @@ struct ToolbarButton: View {
     }
 }
 
-// MARK: - 影片轉碼進度彈窗 (Video Transcoding Progress Popup)
-struct TranscodingProgressPopup: View {
-    let progress: Float
+// MARK: - 基本載入指示器 (Basic Loading Indicator)
+struct BasicLoadingIndicator: View {
     let onCancel: () -> Void
     
     @State private var rotationAngle: Double = 0
@@ -907,100 +892,47 @@ struct TranscodingProgressPopup: View {
             Color.black.opacity(0.7)
                 .edgesIgnoringSafeArea(.all)
                 .onTapGesture {
-                    // 點擊背景不關閉彈窗，防止意外取消轉碼
+                    // 點擊背景不關閉彈窗
                 }
             
-            // 進度彈窗主體
-            VStack(spacing: 30) {
+            // 載入指示器主體
+            VStack(spacing: 20) {
                 // 標題區域
                 VStack(spacing: 8) {
-                    Text("正在處理影片")
+                    Text("正在載入影片")
                         .font(.title2)
                         .fontWeight(.semibold)
                         .foregroundColor(.white)
                     
-                    Text("請稍候，影片正在載入中...")
+                    Text("請稍候...")
                         .font(.body)
                         .foregroundColor(.gray)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 
-                // 轉圈圈動畫區域
-                VStack(spacing: 20) {
-                    ZStack {
-                        // 背景圓圈
-                        Circle()
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 4)
-                            .frame(width: 80, height: 80)
-                        
-                        // 旋轉的圓弧
-                        Circle()
-                            .trim(from: 0.0, to: 0.25)
-                            .stroke(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [.blue, .cyan]),
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                style: StrokeStyle(lineWidth: 4, lineCap: .round)
-                            )
-                            .frame(width: 80, height: 80)
-                            .rotationEffect(Angle(degrees: rotationAngle))
-                            .animation(
-                                Animation.linear(duration: 1.0)
-                                    .repeatForever(autoreverses: false),
-                                value: rotationAngle
-                            )
-                        
-                        // 中央影片圖標
-                        Image(systemName: "video.badge.checkmark")
-                            .font(.system(size: 24, weight: .medium))
-                            .foregroundColor(.blue)
-                    }
-                    
-                    // 狀態文字
-                    Text("處理中...")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.white.opacity(0.8))
-                }
+                // 載入動畫
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                    .scaleEffect(1.5)
                 
                 // 取消按鈕
                 Button(action: onCancel) {
-                    HStack {
-                        Image(systemName: "xmark.circle")
-                            .font(.body)
-                        Text("取消")
-                            .font(.body)
-                            .fontWeight(.medium)
-                    }
-                    .foregroundColor(.red)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
-                    .background(Color.red.opacity(0.1))
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.red.opacity(0.3), lineWidth: 1)
-                    )
+                    Text("取消")
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .foregroundColor(.red)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(8)
                 }
-                
-                // 提示文字
-                Text("處理過程中請勿關閉應用程式")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-                    .padding(.top, 4)
             }
-            .padding(40)
+            .padding(30)
             .background(
                 RoundedRectangle(cornerRadius: 16)
                     .fill(Color.black.opacity(0.95))
                     .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
             )
             .padding(.horizontal, 40)
-        }
-        .onAppear {
-            rotationAngle = 360
         }
     }
 }
