@@ -866,12 +866,7 @@ struct TimelineContainerView: View {
 
 // MARK: - Helper Functions
 
-/// Format time interval for display
-private func formatTime(_ time: TimeInterval) -> String {
-    let minutes = Int(time) / 60
-    let seconds = Int(time) % 60
-    return String(format: "%02d:%02d", minutes, seconds)
-}
+// ...existing code...
 
 // MARK: - Preview
 

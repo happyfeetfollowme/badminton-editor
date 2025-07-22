@@ -20,89 +20,53 @@ struct ContentView: View {
     @State private var currentVideoURL: URL? // This will now store the *copied* video URL
     @State private var photoLibraryAuthorizationStatus: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var currentPHAsset: PHAsset? // Store the current PHAsset for direct access
-
     var body: some View {
         ZStack {
-            // 背景色設定為深色
             Color.black.edgesIgnoringSafeArea(.all)
-
             VStack(spacing: 0) {
-                // MARK: - 2. 頂部工具列 (Top Toolbar)
-                TopToolbarView(onExport: {
-                    // 導出邏輯
-                }, onSelectVideo: {
-                    // Check photo library permissions first
-                    requestPhotoLibraryPermissions { granted in
-                        if granted {
-                            showVideoPicker = true
-                        } else {
-                            print("Photo library access denied")
+                TopToolbarView(
+                    onExport: { /* 導出邏輯 */ },
+                    onSelectVideo: {
+                        requestPhotoLibraryPermissions { granted in
+                            showVideoPicker = granted
                         }
                     }
-                })
-
-                // MARK: - 3. 影片播放區 (Video Playback Area)
+                )
                 VideoPlayerView(player: $player, isPlaying: $isPlaying, currentTime: $currentTime, totalDuration: $totalDuration)
                     .onTapGesture {
-                        // 點擊影片區域來播放/暫停
                         guard player.currentItem != nil else { return }
                         isPlaying.toggle()
                         isPlaying ? player.play() : player.pause()
                     }
-
-                // MARK: - 4&5. 時間軸與播放控制整合區域 (Timeline and Playback Controls)
                 VStack(spacing: 8) {
-                    // 時間軸容器
                     TimelineContainerView(
                         player: $player,
                         currentTime: $currentTime,
                         totalDuration: $totalDuration,
                         markers: $markers
-                    )
-                    .frame(height: 120)
-                    
-                    // 播放控制列 - 與 timeline 的 playhead 對齊
+                    ).frame(height: 120)
                     PlaybackControlsView(
                         player: $player,
                         isPlaying: $isPlaying,
                         currentTime: $currentTime,
                         totalDuration: $totalDuration
                     )
-                }
-                .padding(.vertical, 10)
-
+                }.padding(.vertical, 10)
                 MainActionToolbarView()
             }
-            
-            // MARK: - 影片載入進度 Popup (Video Loading Progress Popup)
-            if thumbnailCache.isTranscoding || showLoadingAnimation {
-                TranscodingProgressPopup(
-                    progress: thumbnailCache.transcodingProgress,
-                    onCancel: {
-                        if thumbnailCache.isTranscoding {
-                            thumbnailCache.cancelTranscoding()
-                        } else {
-                            showLoadingAnimation = false
-                        }
-                    }
-                )
+            if showLoadingAnimation {
+                BasicLoadingIndicator(onCancel: { showLoadingAnimation = false })
             }
         }
-        .preferredColorScheme(.dark) // 強制使用深色模式
+        .preferredColorScheme(.dark)
         .sheet(isPresented: $showVideoPicker) {
             PHAssetVideoPicker(
                 onFinish: { phAsset in
                     if let asset = phAsset {
-                        Task {
-                            await handlePHAssetSelection(with: asset)
-                        }
+                        Task { await handlePHAssetSelection(with: asset) }
                     }
                 },
-                onSelectionStart: {
-                    showLoadingAnimation = true
-                    thumbnailCache.isTranscoding = true
-                    thumbnailCache.transcodingProgress = 0.0
-                }
+                onSelectionStart: { showLoadingAnimation = true }
             )
         }
     }
@@ -132,71 +96,21 @@ struct ContentView: View {
 
     /// Handles the PHAsset selection, loading AVAsset directly without copying data
     private func handlePHAssetSelection(with phAsset: PHAsset) async {
-        print("ContentView: Received PHAsset: \(phAsset.localIdentifier)")
-        
-        // Store the PHAsset for future reference
-        self.currentPHAsset = phAsset
-        
-        // Set the PHAsset in the thumbnail cache so it can generate thumbnails
-        await MainActor.run {
-            thumbnailCache.setPHAsset(phAsset)
-        }
-        
-        // Request AVAsset directly from PHAsset
-        await requestAVAssetFromPHAsset(phAsset)
-    }
-    
-    /// Request AVAsset directly from PHAsset using PHImageManager
-    private func requestAVAssetFromPHAsset(_ phAsset: PHAsset) async {
-        print("ContentView: Requesting AVAsset from PHAsset...")
-        
-        // Configure request options for high quality
-        let options = PHVideoRequestOptions()
-        options.isNetworkAccessAllowed = true // Allow iCloud downloads
-        options.deliveryMode = .highQualityFormat
-        options.version = .current
-        
-        // Show progress for iCloud downloads
-        options.progressHandler = { progress, error, _, _ in
-            DispatchQueue.main.async {
-                self.thumbnailCache.transcodingProgress = Float(progress)
-                if let error = error {
-                    print("ContentView: iCloud download error: \(error)")
-                }
-            }
-        }
-        
-        return await withCheckedContinuation { continuation in
-            PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { (avAsset, audioMix, info) in
-                DispatchQueue.main.async {
-                    if let asset = avAsset {
-                        print("ContentView: Successfully received AVAsset from PHImageManager")
-                        Task {
-                            await self.loadVideoAsset(asset)
-                        }
-                        continuation.resume()
-                    } else {
-                        print("ContentView: Failed to get AVAsset from PHAsset")
-                        self.showLoadingAnimation = false
-                        self.thumbnailCache.isTranscoding = false
-                        continuation.resume()
-                    }
-                }
-            }
-        }
+        await VideoLoader.handlePHAssetSelection(
+            phAsset: phAsset,
+            thumbnailCache: thumbnailCache,
+            setCurrentPHAsset: { self.currentPHAsset = $0 },
+            loadVideoAsset: { asset in await self.loadVideoAsset(asset) }
+        )
     }
 
-    /// 1. Handles the video selection, now receiving a STABLE, copied URL.
+    /// Handles the video selection, now receiving a STABLE, copied URL.
     private func handleVideoSelection(with localURL: URL) async {
-        // The URL is already a stable, local copy.
-        print("ContentView: Received stable URL: \(localURL.path)")
-        
-        // Store the stable URL.
-        self.currentVideoURL = localURL
-        
-        // Create an asset from the stable URL and load it.
-        let asset = AVURLAsset(url: localURL)
-        await loadVideoAsset(asset)
+        await VideoLoader.handleVideoSelection(
+            localURL: localURL,
+            setCurrentVideoURL: { self.currentVideoURL = $0 },
+            loadVideoAsset: { asset in await self.loadVideoAsset(asset) }
+        )
     }
     
     // MARK: - Helper Methods for Video Loading
@@ -222,8 +136,6 @@ struct ContentView: View {
         await MainActor.run {
             if !showLoadingAnimation {
                 showLoadingAnimation = true
-                thumbnailCache.isTranscoding = true
-                thumbnailCache.transcodingProgress = 0.1 // 立即顯示一些進度
             }
         }
         
@@ -241,7 +153,6 @@ struct ContentView: View {
         let duration = await durationTask
         await MainActor.run {
             totalDuration = duration
-            thumbnailCache.transcodingProgress = 0.8 // 更新進度
             print("ContentView: 極速載入完成 - 時長: \(totalDuration)秒")
         }
         
@@ -257,8 +168,6 @@ struct ContentView: View {
         try? await Task.sleep(nanoseconds: 25_000_000) // 只等待 0.025 秒
         await MainActor.run {
             showLoadingAnimation = false
-            thumbnailCache.isTranscoding = false
-            thumbnailCache.transcodingProgress = 1.0
             print("ContentView: 極速載入動畫隱藏，總耗時 < 0.05秒")
         }
     }
@@ -739,518 +648,5 @@ struct ContentView: View {
             Character(UnicodeScalar(code & 0xFF)!)
         ]
         return String(chars)
-    }
-    
-    /// 視頻編碼信息結構
-    struct VideoCodecInfo {
-        let codecName: String
-        let isHEVC: Bool
-        let fourCC: FourCharCode
-    }
-}
-
-// MARK: - UI 組件 (UI Components)
-
-// 2. 頂部工具列
-struct TopToolbarView: View {
-    var onExport: () -> Void
-    var onSelectVideo: () -> Void
-
-    var body: some View {
-        HStack {
-            Button(action: onSelectVideo) {
-                Image(systemName: "video.badge.plus")
-                    .font(.title2)
-            }
-            
-            Spacer()
-            
-            Button(action: onExport) {
-                Text("Export")
-                    .font(.headline)
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 8)
-                    .background(Color.accentColor).cornerRadius(8)
-            }
-        }
-        .padding().background(Color.black)
-    }
-}
-
-struct PlaybackControlsView: View {
-    @Binding var player: AVPlayer
-    @Binding var isPlaying: Bool
-    @Binding var currentTime: TimeInterval
-    @Binding var totalDuration: TimeInterval
-    
-    var body: some View {
-        HStack(spacing: 0) {
-            // 左側時間顯示
-            Text(formatTime(currentTime))
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundColor(.white)
-                .frame(width: 60, alignment: .leading)
-
-            // 左側控制按鈕區域
-            HStack(spacing: 12) {
-                // 撤銷按鈕
-                Button(action: {}) {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white)
-                }
-                
-                // 倒退按鈕 (新增)
-                Button(action: {}) {
-                    Image(systemName: "gobackward.10")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 20)
-
-            // 中央播放/暫停按鈕 - 對齊 playhead
-            Button(action: {
-                guard player.currentItem != nil else { return }
-                
-                if isPlaying {
-                    player.pause()
-                    isPlaying = false
-                } else {
-                    player.play()
-                    isPlaying = true
-                }
-            }) {
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(.white)
-                    .frame(width: 48, height: 48)
-                    .background(Color.white.opacity(0.15))
-                    .clipShape(Circle())
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                    )
-            }
-            .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
-
-            // 右側控制按鈕區域
-            HStack(spacing: 12) {
-                // 快進按鈕 (新增)
-                Button(action: {}) {
-                    Image(systemName: "goforward.10")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white)
-                }
-                
-                // 重做按鈕
-                Button(action: {}) {
-                    Image(systemName: "arrow.uturn.forward")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.trailing, 20)
-            
-            // 右側總時長顯示
-            Text(formatTime(totalDuration))
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundColor(.white)
-                .frame(width: 60, alignment: .trailing)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-    }
-}
-
-struct MainActionToolbarView: View {
-    var body: some View {
-        HStack {
-            ToolbarButton(icon: "scissors", label: "Edit")
-            ToolbarButton(icon: "music.note", label: "Audio")
-            ToolbarButton(icon: "textformat", label: "Text")
-            ToolbarButton(icon: "square.stack.3d.down.right", label: "Overlay")
-            ToolbarButton(icon: "wand.and.stars", label: "Effects")
-        }
-        .padding().background(Color.black)
-    }
-}
-
-struct ToolbarButton: View {
-    let icon: String
-    let label: String
-    
-    var body: some View {
-        VStack {
-            Image(systemName: icon)
-                .font(.title2)
-            Text(label)
-                .font(.caption)
-        }
-        .frame(maxWidth: .infinity).foregroundColor(.white)
-    }
-}
-
-// MARK: - 影片轉碼進度彈窗 (Video Transcoding Progress Popup)
-struct TranscodingProgressPopup: View {
-    let progress: Float
-    let onCancel: () -> Void
-    
-    @State private var rotationAngle: Double = 0
-    
-    var body: some View {
-        ZStack {
-            // 半透明背景遮罩
-            Color.black.opacity(0.7)
-                .edgesIgnoringSafeArea(.all)
-                .onTapGesture {
-                    // 點擊背景不關閉彈窗，防止意外取消轉碼
-                }
-            
-            // 進度彈窗主體
-            VStack(spacing: 30) {
-                // 標題區域
-                VStack(spacing: 8) {
-                    Text("正在處理影片")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                    
-                    Text("請稍候，影片正在載入中...")
-                        .font(.body)
-                        .foregroundColor(.gray)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                
-                // 轉圈圈動畫區域
-                VStack(spacing: 20) {
-                    ZStack {
-                        // 背景圓圈
-                        Circle()
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 4)
-                            .frame(width: 80, height: 80)
-                        
-                        // 旋轉的圓弧
-                        Circle()
-                            .trim(from: 0.0, to: 0.25)
-                            .stroke(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [.blue, .cyan]),
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                style: StrokeStyle(lineWidth: 4, lineCap: .round)
-                            )
-                            .frame(width: 80, height: 80)
-                            .rotationEffect(Angle(degrees: rotationAngle))
-                            .animation(
-                                Animation.linear(duration: 1.0)
-                                    .repeatForever(autoreverses: false),
-                                value: rotationAngle
-                            )
-                        
-                        // 中央影片圖標
-                        Image(systemName: "video.badge.checkmark")
-                            .font(.system(size: 24, weight: .medium))
-                            .foregroundColor(.blue)
-                    }
-                    
-                    // 狀態文字
-                    Text("處理中...")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.white.opacity(0.8))
-                }
-                
-                // 取消按鈕
-                Button(action: onCancel) {
-                    HStack {
-                        Image(systemName: "xmark.circle")
-                            .font(.body)
-                        Text("取消")
-                            .font(.body)
-                            .fontWeight(.medium)
-                    }
-                    .foregroundColor(.red)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
-                    .background(Color.red.opacity(0.1))
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.red.opacity(0.3), lineWidth: 1)
-                    )
-                }
-                
-                // 提示文字
-                Text("處理過程中請勿關閉應用程式")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-                    .padding(.top, 4)
-            }
-            .padding(40)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.black.opacity(0.95))
-                    .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
-            )
-            .padding(.horizontal, 40)
-        }
-        .onAppear {
-            rotationAngle = 360
-        }
-    }
-}
-
-// MARK: - PHAssetVideoPicker: Direct PHAsset access without copying data
-struct PHAssetVideoPicker: UIViewControllerRepresentable {
-    var onFinish: (PHAsset?) -> Void
-    var onSelectionStart: (() -> Void)?
-
-    func makeUIViewController(context: Context) -> PHPickerViewController {
-        var config = PHPickerConfiguration(photoLibrary: PHPhotoLibrary.shared())
-        config.filter = .videos
-        config.selectionLimit = 1
-        config.preferredAssetRepresentationMode = .current // Use current version
-        
-        let picker = PHPickerViewController(configuration: config)
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    class Coordinator: NSObject, PHPickerViewControllerDelegate {
-        let parent: PHAssetVideoPicker
-
-        init(_ parent: PHAssetVideoPicker) { 
-            self.parent = parent 
-        }
-
-        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            if !results.isEmpty {
-                parent.onSelectionStart?()
-            }
-            
-            picker.dismiss(animated: true)
-            
-            guard let result = results.first else {
-                parent.onFinish(nil)
-                return
-            }
-            
-            // Get the PHAsset identifier and fetch the PHAsset directly
-            if let assetIdentifier = result.assetIdentifier {
-                let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil)
-                if let phAsset = fetchResult.firstObject {
-                    print("PHAssetVideoPicker: Successfully retrieved PHAsset: \(phAsset.localIdentifier)")
-                    print("PHAssetVideoPicker: Asset duration: \(phAsset.duration) seconds")
-                    print("PHAssetVideoPicker: Asset dimensions: \(phAsset.pixelWidth)x\(phAsset.pixelHeight)")
-                    parent.onFinish(phAsset)
-                } else {
-                    print("PHAssetVideoPicker: Failed to fetch PHAsset with identifier: \(assetIdentifier)")
-                    parent.onFinish(nil)
-                }
-            } else {
-                print("PHAssetVideoPicker: No asset identifier available")
-                parent.onFinish(nil)
-            }
-        }
-    }
-}
-
-// MARK: - Legacy VideoPicker (kept for reference/fallback)
-// Fetches the temporary URL from the itemProvider.
-struct VideoPicker: UIViewControllerRepresentable {
-    var onFinish: (URL?) -> Void
-    var onSelectionStart: (() -> Void)?
-
-    func makeUIViewController(context: Context) -> PHPickerViewController {
-        var config = PHPickerConfiguration()
-        config.filter = .videos
-        config.selectionLimit = 1
-        let picker = PHPickerViewController(configuration: config)
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    class Coordinator: NSObject, PHPickerViewControllerDelegate {
-        let parent: VideoPicker
-
-        init(_ parent: VideoPicker) { self.parent = parent }
-
-        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            if !results.isEmpty {
-                parent.onSelectionStart?()
-            }
-            
-            picker.dismiss(animated: true)
-            
-            guard let provider = results.first?.itemProvider else {
-                parent.onFinish(nil)
-                return
-            }
-            
-            // Use loadFileRepresentation to get a stable, readable URL
-            if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-                provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
-                    guard let sourceURL = url, error == nil else {
-                        DispatchQueue.main.async {
-                            print("VideoPicker: Failed to load file representation: \(error?.localizedDescription ?? "Unknown error")")
-                            self.parent.onFinish(nil)
-                        }
-                        return
-                    }
-                    
-                    // ** THE CRITICAL FIX **
-                    // Immediately copy the file to a stable location before this closure returns.
-                    let fileManager = FileManager.default
-                    let destinationURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + sourceURL.pathExtension)
-                    
-                    do {
-                        try fileManager.copyItem(at: sourceURL, to: destinationURL)
-                        // Now pass the NEW, STABLE URL back to the content view.
-                        DispatchQueue.main.async {
-                            self.parent.onFinish(destinationURL)
-                        }
-                    } catch {
-                        print("VideoPicker: Error copying file: \(error)")
-                        DispatchQueue.main.async {
-                            self.parent.onFinish(nil)
-                        }
-                    }
-                }
-            } else {
-                DispatchQueue.main.async {
-                    self.parent.onFinish(nil)
-                }
-            }
-        }
-    }
-}
-
-struct VideoPlayerView: View {
-    @Binding var player: AVPlayer
-    @Binding var isPlaying: Bool
-    @Binding var currentTime: TimeInterval
-    @Binding var totalDuration: TimeInterval
-    
-    @State private var timeObserver: Any?
-
-    var body: some View {
-        VideoPlayer(player: player)
-            .onAppear {
-                setupPlayer()
-            }
-            .onDisappear {
-                removeTimeObserver()
-            }
-    }
-    
-    private func setupPlayer() {
-        // Configure audio session for playback
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("Failed to set audio session category: \(error)")
-        }
-        
-        // Remove existing observer if any
-        removeTimeObserver()
-        
-        // Add time observer with reasonable frequency (30fps instead of 100fps)
-        timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 1.0/30.0, preferredTimescale: 600),
-            queue: .main
-        ) { time in
-            currentTime = time.seconds
-            
-            // Update isPlaying state based on actual player state
-            updatePlayingState()
-        }
-        
-        // Add notification observers for player state changes
-        NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: player.currentItem,
-            queue: .main
-        ) { _ in
-            isPlaying = false
-        }
-        
-        // Add observer for when player fails to play
-        NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemFailedToPlayToEndTime,
-            object: player.currentItem,
-            queue: .main
-        ) { _ in
-            isPlaying = false
-        }
-        
-        // Add observer for when player stalls
-        NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemPlaybackStalled,
-            object: player.currentItem,
-            queue: .main
-        ) { _ in
-            // Don't change isPlaying state for stalls, just log
-            print("Player stalled")
-        }
-        
-        // Ensure audio is enabled
-        player.isMuted = false
-        player.volume = 1.0
-    }
-    
-    private func removeTimeObserver() {
-        if let observer = timeObserver {
-            player.removeTimeObserver(observer)
-            timeObserver = nil
-        }
-        NotificationCenter.default.removeObserver(self)
-    }
-    
-    private func updatePlayingState() {
-        // Check if player is actually playing
-        let actuallyPlaying = player.rate > 0 && player.error == nil && player.currentItem != nil
-        
-        // Only update if there's a real change to avoid unnecessary UI updates
-        // Since we're already on the main queue from the time observer, no need for async dispatch
-        if isPlaying != actuallyPlaying {
-            isPlaying = actuallyPlaying
-        }
-    }
-}
-
-// MARK: - Legacy SimplifiedTimelineView has been replaced by TimelineContainerView
-// The new implementation provides enhanced timeline scrubbing functionality
-// with improved performance, gesture handling, and visual feedback
-
-// MARK: - 輔助視圖與數據模型 (Helper Views & Data Models)
-// Note: Shared models and views are now in TimelineModels.swift
-
-private func formatTime(_ time: TimeInterval) -> String {
-    let minutes = Int(time) / 60
-    let seconds = Int(time) % 60
-    return String(format: "%02d:%02d", minutes, seconds)
-}
-
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        ContentView()
     }
 }
