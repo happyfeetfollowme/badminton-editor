@@ -14,6 +14,9 @@ extension ThumbnailCache {
 
         // 先清空快取
         self.clearCache()
+        
+        // Set PHAsset mode flag
+        self.isUsingPHAsset = true
 
         // 取得 AVAsset
         let options = PHVideoRequestOptions()
@@ -483,6 +486,7 @@ class ThumbnailCache: ObservableObject {
     private var imageGenerator: AVAssetImageGenerator?
     private let thumbnailQueue = DispatchQueue(label: "thumbnail.generation", qos: .userInitiated)
     private var asset: AVAsset?
+    private var isUsingPHAsset: Bool = false // Track if we're using PHAsset mode
     
     @Published var thumbnails: [TimeInterval: UIImage] = [:]
     @Published var isGenerating: Bool = false
@@ -568,13 +572,21 @@ class ThumbnailCache: ObservableObject {
     func clearCache() {
         cache.removeAllObjects()
         thumbnails.removeAll()
+        // Note: Don't reset isUsingPHAsset here as it's used by setPHAsset
     }
     
     // MARK: - Asset Management
     
-    func setAsset(_ newAsset: AVAsset) {
+    func setAsset(_ newAsset: AVAsset, force: Bool = false) {
+        // Don't override PHAsset setup with regular asset unless forced
+        if isUsingPHAsset && !force {
+            print("ThumbnailCache: Ignoring setAsset call - already using PHAsset mode")
+            return
+        }
+        
         print("ThumbnailCache: Setting new asset with duration: \(newAsset.duration.seconds)")
         asset = newAsset
+        isUsingPHAsset = false // Reset PHAsset mode when setting regular asset
         clearCache()
         
         // Create new image generator for the asset
