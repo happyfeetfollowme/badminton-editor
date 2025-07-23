@@ -108,11 +108,11 @@ struct ContentView: View {
                     setTotalDuration: { self.totalDuration = $0 },
                     setMarkers: { self.markers = $0 },
                     setShowLoadingAnimation: { self.showLoadingAnimation = $0 },
-                    applyInstantGPUOptimizations: self.applyInstantGPUOptimizations,
-                    configureDetailedGPUAcceleration: self.configureDetailedGPUAcceleration,
-                    configureAudioSession: self.configureAudioSession,
-                    detectVideoCodecFormat: self.detectVideoCodecFormat,
-                    loadDurationOptimized: self.loadDurationOptimized
+                    applyInstantGPUOptimizations: VideoLoader.applyInstantGPUOptimizations,
+                    configureDetailedGPUAcceleration: VideoLoader.configureDetailedGPUAcceleration,
+                    configureAudioSession: VideoLoader.configureAudioSession,
+                    detectVideoCodecFormat: VideoLoader.detectVideoCodecFormat,
+                    loadDurationOptimized: VideoLoader.loadDurationOptimized
                 )
             }
         )
@@ -131,11 +131,11 @@ struct ContentView: View {
                     setTotalDuration: { self.totalDuration = $0 },
                     setMarkers: { self.markers = $0 },
                     setShowLoadingAnimation: { self.showLoadingAnimation = $0 },
-                    applyInstantGPUOptimizations: self.applyInstantGPUOptimizations,
-                    configureDetailedGPUAcceleration: self.configureDetailedGPUAcceleration,
-                    configureAudioSession: self.configureAudioSession,
-                    detectVideoCodecFormat: self.detectVideoCodecFormat,
-                    loadDurationOptimized: self.loadDurationOptimized
+                    applyInstantGPUOptimizations: VideoLoader.applyInstantGPUOptimizations,
+                    configureDetailedGPUAcceleration: VideoLoader.configureDetailedGPUAcceleration,
+                    configureAudioSession: VideoLoader.configureAudioSession,
+                    detectVideoCodecFormat: VideoLoader.detectVideoCodecFormat,
+                    loadDurationOptimized: VideoLoader.loadDurationOptimized
                 )
             }
         )
