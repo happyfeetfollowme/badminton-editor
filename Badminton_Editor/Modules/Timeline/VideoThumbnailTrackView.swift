@@ -406,7 +406,7 @@ struct VideoThumbnailTrackView: View {
         
         let asset = currentItem.asset
         print("VideoThumbnailTrackView: Setting up cache with asset duration: \(asset.duration.seconds)")
-        thumbnailCache.setAsset(asset)
+        Task { await thumbnailCache.setAsset(asset) }
     }
     
     /// Generate initial thumbnails immediately after video is loaded
