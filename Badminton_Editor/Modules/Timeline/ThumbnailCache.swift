@@ -74,7 +74,16 @@ extension ThumbnailCache {
                     durationSeconds = avAsset.duration.seconds
                 }
 
-                print("ThumbnailCache: AVAsset duration=\(durationSeconds), isPlayable=\(avAsset.isPlayable), isReadable=\(avAsset.isReadable)")
+                var isPlayable: Bool = false
+                var isReadable: Bool = false
+                if #available(iOS 16.0, *) {
+                    isPlayable = (try? await avAsset.load(.isPlayable)) ?? false
+                    isReadable = (try? await avAsset.load(.isReadable)) ?? false
+                } else {
+                    isPlayable = avAsset.isPlayable
+                    isReadable = avAsset.isReadable
+                }
+                print("ThumbnailCache: AVAsset duration=\(durationSeconds), isPlayable=\(isPlayable), isReadable=\(isReadable)")
 
                 // 列出所有 video track 的 codec type
                 var videoTracks: [AVAssetTrack] = []
@@ -126,7 +135,7 @@ extension ThumbnailCache {
                 }
 
                 // 檢查 AVAsset 是否真的可用
-                if !avAsset.isPlayable || !avAsset.isReadable {
+                if !isPlayable || !isReadable {
                     print("ThumbnailCache: ❌ AVAsset is not playable or readable")
                     self.tryAlternativeVideoRequest(for: phAsset)
                     return
@@ -134,7 +143,7 @@ extension ThumbnailCache {
 
                 // 設定 asset 並生成縮圖
                 DispatchQueue.main.async {
-                    self.setAsset(avAsset)
+                    Task { await self.setAsset(avAsset) }
                 }
             }
         }
@@ -178,7 +187,7 @@ extension ThumbnailCache {
             if let avAsset = avAsset {
                 print("ThumbnailCache: ✅ Alternative request succeeded")
                 DispatchQueue.main.async {
-                    self.setAsset(avAsset)
+                    Task { await self.setAsset(avAsset) }
                 }
             } else {
                 print("ThumbnailCache: ❌ Alternative request also failed")
@@ -329,14 +338,20 @@ class ThumbnailCache: ObservableObject {
     
     // MARK: - Asset Management
     
-    func setAsset(_ newAsset: AVAsset, force: Bool = false) {
+    func setAsset(_ newAsset: AVAsset, force: Bool = false) async {
         // Don't override PHAsset setup with regular asset unless forced
         if isUsingPHAsset && !force {
             print("ThumbnailCache: Ignoring setAsset call - already using PHAsset mode")
             return
         }
         
-        print("ThumbnailCache: Setting new asset with duration: \(newAsset.duration.seconds)")
+        var durationSeconds: Double = 0
+        if #available(iOS 16.0, *) {
+            durationSeconds = (try? await newAsset.load(.duration))?.seconds ?? 0
+        } else {
+            durationSeconds = newAsset.duration.seconds
+        }
+        print("ThumbnailCache: Setting new asset with duration: \(durationSeconds)")
         asset = newAsset
         isUsingPHAsset = false // Reset PHAsset mode when setting regular asset
         clearCache()

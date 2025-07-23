@@ -18,6 +18,7 @@ class VideoLoader {
                 print("VideoLoader: 現代 API 時長載入失敗: \(error)")
             }
         } else {
+            // Deprecated: .duration, use load(.duration) if possible
             let syncDuration = asset.duration.seconds
             if syncDuration > 0 && syncDuration.isFinite {
                 print("VideoLoader: iOS 15 時長載入成功: \(syncDuration)秒")
@@ -45,6 +46,7 @@ class VideoLoader {
         } else {
             let tracks = asset.tracks(withMediaType: .video)
             if let videoTrack = tracks.first {
+                // Deprecated: .timeRange, use load(.timeRange) if possible
                 let duration = videoTrack.timeRange.duration.seconds
                 if duration > 0 && duration.isFinite {
                     print("VideoLoader: iOS 15 備用時長載入成功: \(duration)秒")
@@ -170,6 +172,7 @@ class VideoLoader {
                     return true
                 }
             } else {
+                // Deprecated: .duration, use load(.duration) if possible
                 let duration = asset.duration
                 if duration.seconds > 0 && duration.seconds.isFinite {
                     print("VideoLoader: Asset 可用 - 通過 iOS 15 時長檢測: \(duration.seconds)秒")
@@ -188,6 +191,7 @@ class VideoLoader {
                     return true
                 }
             } else {
+                // Deprecated: tracks(withMediaType:), use load(.tracks) if possible
                 let videoTracks = asset.tracks(withMediaType: .video)
                 if !videoTracks.isEmpty {
                     print("VideoLoader: Asset 可用 - iOS 15 發現 \(videoTracks.count) 個視頻軌道")
@@ -335,7 +339,10 @@ class VideoLoader {
             guard let firstFormat = formatDescriptions.first else {
                 return VideoCodecInfo(codecName: "H.264/AVC", isHEVC: false, fourCC: 0)
             }
-            let formatDescription = firstFormat as! CMFormatDescription
+            // Conditional cast always succeeds for CMFormatDescription
+            guard let formatDescription = firstFormat as? CMFormatDescription else {
+                return VideoCodecInfo(codecName: "H.264/AVC", isHEVC: false, fourCC: 0)
+            }
             let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDescription)
             let codecInfo = identifyCodecFast(mediaSubType)
             print("VideoLoader: 快速編碼檢測 - 格式: \(codecInfo.codecName)")
