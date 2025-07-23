@@ -100,7 +100,21 @@ struct ContentView: View {
             phAsset: phAsset,
             thumbnailCache: thumbnailCache,
             setCurrentPHAsset: { self.currentPHAsset = $0 },
-            loadVideoAsset: { asset in await self.loadVideoAsset(asset) }
+            loadVideoAsset: { asset in
+                await VideoLoader.loadVideoAsset(
+                    asset: asset,
+                    player: player,
+                    setCurrentTime: { self.currentTime = $0 },
+                    setTotalDuration: { self.totalDuration = $0 },
+                    setMarkers: { self.markers = $0 },
+                    setShowLoadingAnimation: { self.showLoadingAnimation = $0 },
+                    applyInstantGPUOptimizations: self.applyInstantGPUOptimizations,
+                    configureDetailedGPUAcceleration: self.configureDetailedGPUAcceleration,
+                    configureAudioSession: self.configureAudioSession,
+                    detectVideoCodecFormat: self.detectVideoCodecFormat,
+                    loadDurationOptimized: self.loadDurationOptimized
+                )
+            }
         )
     }
 
@@ -109,67 +123,22 @@ struct ContentView: View {
         await VideoLoader.handleVideoSelection(
             localURL: localURL,
             setCurrentVideoURL: { self.currentVideoURL = $0 },
-            loadVideoAsset: { asset in await self.loadVideoAsset(asset) }
-        )
-    }
-    
-    // MARK: - Helper Methods for Video Loading
-    
-    /// 載入影片資源到播放器 - 極速載入優化版本
-    private func loadVideoAsset(_ asset: AVAsset) async {
-        print("ContentView: 開始極速載入影片資源...")
-        
-        // 立即創建 AVPlayerItem，不等待任何檢測
-        let playerItem = AVPlayerItem(asset: asset)
-        
-        // 立即設置播放器以開始預載，這是最關鍵的優化
-        await MainActor.run {
-            player.replaceCurrentItem(with: playerItem)
-            player.isMuted = false
-            player.volume = 1.0
-            currentTime = 0.0
-            markers = []
-            print("ContentView: 播放器已立即設置，開始預載")
-        }
-        
-        // 確保載入動畫顯示（如果尚未顯示）
-        await MainActor.run {
-            if !showLoadingAnimation {
-                showLoadingAnimation = true
+            loadVideoAsset: { asset in
+                await VideoLoader.loadVideoAsset(
+                    asset: asset,
+                    player: player,
+                    setCurrentTime: { self.currentTime = $0 },
+                    setTotalDuration: { self.totalDuration = $0 },
+                    setMarkers: { self.markers = $0 },
+                    setShowLoadingAnimation: { self.showLoadingAnimation = $0 },
+                    applyInstantGPUOptimizations: self.applyInstantGPUOptimizations,
+                    configureDetailedGPUAcceleration: self.configureDetailedGPUAcceleration,
+                    configureAudioSession: self.configureAudioSession,
+                    detectVideoCodecFormat: self.detectVideoCodecFormat,
+                    loadDurationOptimized: self.loadDurationOptimized
+                )
             }
-        }
-        
-        // 並行處理所有非關鍵任務，不阻塞播放器設置
-        async let audioSessionTask = configureAudioSession()
-        async let codecInfoTask = detectVideoCodecFormat(asset)
-        async let durationTask = loadDurationOptimized(asset: asset)
-        
-        // 等待編碼檢測完成後應用基本優化
-        let videoCodecInfo = await codecInfoTask
-        print("ContentView: 檢測到影片格式: \(videoCodecInfo.codecName)")
-        await applyInstantGPUOptimizations(playerItem, codecInfo: videoCodecInfo)
-        
-        // 等待時長載入完成
-        let duration = await durationTask
-        await MainActor.run {
-            totalDuration = duration
-            print("ContentView: 極速載入完成 - 時長: \(totalDuration)秒")
-        }
-        
-        // 完成音訊會話配置
-        await audioSessionTask
-        
-        // 在背景完成詳細 GPU 配置，完全不阻塞 UI
-        Task {
-            await configureDetailedGPUAcceleration(playerItem, asset: asset, codecInfo: videoCodecInfo)
-        }
-        
-        // 非常短的等待後隱藏載入動畫
-        try? await Task.sleep(nanoseconds: 25_000_000) // 只等待 0.025 秒
-        await MainActor.run {
-            showLoadingAnimation = false
-            print("ContentView: 極速載入動畫隱藏，總耗時 < 0.05秒")
-        }
+        )
     }
     
     /// 極速時長載入，優化性能
