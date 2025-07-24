@@ -28,11 +28,16 @@ struct VideoThumbnailTrackView: View {
     /// Boundary padding for smooth scrolling
     private let boundaryPadding: CGFloat = 1000
     
-    /// Standard thumbnail height
-    private let thumbnailHeight: CGFloat = 60
-    
-    /// Standard thumbnail aspect ratio (16:9)
-    private let thumbnailAspectRatio: CGFloat = 16.0 / 9.0
+    /// Dynamic thumbnail height based on cache (fallback to 60 if not set)
+    private var thumbnailHeight: CGFloat {
+        max(24, thumbnailCache.thumbnailSize.height)
+    }
+
+    /// Dynamic thumbnail aspect ratio based on cache (fallback to 16:9 if not set)
+    private var thumbnailAspectRatio: CGFloat {
+        let size = thumbnailCache.thumbnailSize
+        return size.width > 0 && size.height > 0 ? size.width / size.height : 16.0 / 9.0
+    }
     
     /// Minimum thumbnail width to maintain readability
     private let minThumbnailWidth: CGFloat = 40
@@ -199,13 +204,14 @@ struct VideoThumbnailTrackView: View {
     @ViewBuilder
     private func thumbnailCell(for time: TimeInterval, at index: Int) -> some View {
         let cellWidth = calculateThumbnailWidth(for: time, at: index)
-        
+        let height = thumbnailHeight
+        let aspect = thumbnailAspectRatio
         if let thumbnail = getThumbnail(for: time) {
             // Display actual thumbnail
             Image(uiImage: thumbnail)
                 .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: cellWidth, height: thumbnailHeight)
+                .aspectRatio(aspect, contentMode: .fill)
+                .frame(width: cellWidth, height: height)
                 .clipped()
                 .overlay(
                     // Subtle border for definition
@@ -214,7 +220,7 @@ struct VideoThumbnailTrackView: View {
                 )
         } else {
             // Display placeholder while thumbnail loads
-            thumbnailPlaceholder(width: cellWidth)
+            thumbnailPlaceholder(width: cellWidth, height: height, aspect: aspect)
                 .onAppear {
                     generateThumbnail(for: time)
                 }
@@ -224,13 +230,14 @@ struct VideoThumbnailTrackView: View {
     // MARK: - Thumbnail Placeholder
     
     /// Create a placeholder rectangle for thumbnails not yet loaded
-    /// - Parameter width: The width of the placeholder
+    /// - Parameters: width, height, aspect
     /// - Returns: A placeholder view with loading indicator
     @ViewBuilder
-    private func thumbnailPlaceholder(width: CGFloat) -> some View {
+    private func thumbnailPlaceholder(width: CGFloat, height: CGFloat, aspect: CGFloat) -> some View {
         Rectangle()
             .fill(Color.black.opacity(0.3))
-            .frame(width: width, height: thumbnailHeight)
+            .aspectRatio(aspect, contentMode: .fill)
+            .frame(width: width, height: height)
             .overlay(
                 Rectangle()
                     .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
@@ -241,8 +248,6 @@ struct VideoThumbnailTrackView: View {
                     Image(systemName: "video.fill")
                         .foregroundColor(.white.opacity(0.4))
                         .font(.system(size: 14))
-                    
-                    // Subtle loading animation
                     Rectangle()
                         .fill(Color.white.opacity(0.2))
                         .frame(width: width * 0.6, height: 2)

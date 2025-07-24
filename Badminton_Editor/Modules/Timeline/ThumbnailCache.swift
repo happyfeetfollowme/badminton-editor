@@ -259,7 +259,10 @@ class ThumbnailCache: ObservableObject {
     
     // Cache configuration
     private let maxCacheSize: Int = 80 // 減少快取數量以因應更高解析度
-    private let thumbnailSize = CGSize(width: 240, height: 135) // 16:9 aspect ratio, 2x resolution
+    private var _thumbnailSize = CGSize(width: 240, height: 135) // Will be updated to match video aspect ratio
+
+    /// Expose the current thumbnail size for external use (e.g., UI layout)
+    var thumbnailSize: CGSize { _thumbnailSize }
     
     // MARK: - Initialization
     
@@ -290,10 +293,21 @@ class ThumbnailCache: ObservableObject {
     }
     
     private func configureImageGenerator() {
-        guard let generator = imageGenerator else { return }
+        guard let generator = imageGenerator, let asset = asset else { return }
         
-        // 極速配置，減少品質要求以提升載入速度
-        generator.maximumSize = CGSize(width: 160, height: 90) // 大幅減小尺寸以提升速度
+        // Try to get the natural size of the first video track
+        var naturalSize = CGSize(width: 240, height: 135)
+        if let videoTrack = asset.tracks(withMediaType: .video).first {
+            naturalSize = videoTrack.naturalSize.applying(videoTrack.preferredTransform)
+            // Use absolute values to avoid negative sizes
+            naturalSize = CGSize(width: abs(naturalSize.width), height: abs(naturalSize.height))
+        }
+        // Set a fixed thumbnail height, adjust width to maintain aspect ratio
+        let fixedHeight: CGFloat = 135
+        let aspectRatio = naturalSize.width / max(naturalSize.height, 1)
+        let width = max(1, fixedHeight * aspectRatio)
+        _thumbnailSize = CGSize(width: width, height: fixedHeight)
+        generator.maximumSize = _thumbnailSize
         
         // 設置較大的時間容差以加快生成速度
         let fastTolerance = CMTime(seconds: 0.2, preferredTimescale: 600)
@@ -310,7 +324,7 @@ class ThumbnailCache: ObservableObject {
             generator.videoComposition = nil // 減少處理複雜度
         }
         
-        print("ThumbnailCache: Image generator configured for maximum speed")
+        print("ThumbnailCache: Image generator configured for video aspect ratio: \(thumbnailSize)")
     }
     
     // MARK: - Memory Management
@@ -360,7 +374,7 @@ class ThumbnailCache: ObservableObject {
         imageGenerator = AVAssetImageGenerator(asset: newAsset)
         configureImageGenerator()
         
-        print("ThumbnailCache: Image generator configured successfully")
+        print("ThumbnailCache: Image generator configured successfully with size: \(thumbnailSize)")
         
         // 延遲縮圖生成，優先載入播放器
         Task {
