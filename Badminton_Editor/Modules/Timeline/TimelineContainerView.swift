@@ -10,6 +10,7 @@ struct TimelineContainerView: View {
     @Binding var currentTime: TimeInterval
     @Binding var totalDuration: TimeInterval
     @Binding var markers: [RallyMarker]
+    @ObservedObject var thumbnailProvider: ThumbnailProvider
     
     // MARK: - State Management
     @StateObject private var timelineState = TimelineState()
@@ -27,6 +28,8 @@ struct TimelineContainerView: View {
     @State private var timeObserver: Any?
     @State private var isAutoScrollingEnabled = true
     @State private var lastAutoScrollTime: TimeInterval = 0
+    
+
     
     var body: some View {
         GeometryReader { geometry in
@@ -100,15 +103,16 @@ struct TimelineContainerView: View {
                 markers: markers,
                 onMarkerTap: { marker, position in
                     handleMarkerTap(marker: marker, position: position, screenWidth: geometry.size.width)
-                }
+                },
+                thumbnailProvider: thumbnailProvider
             )
-            .gesture(
+            .simultaneousGesture(
                 DragGesture(coordinateSpace: .named("timeline"))
                     .onChanged { value in
-                        handleDragChanged(value, screenWidth: geometry.size.width)
+                        handleDragChanged(value, screenWidth: geometry.size.width, timelineHeight: geometry.size.height)
                     }
                     .onEnded { value in
-                        handleDragEnded(value, screenWidth: geometry.size.width)
+                        handleDragEnded(value, screenWidth: geometry.size.width, timelineHeight: geometry.size.height)
                     }
             )
             .onTapGesture { location in
@@ -126,7 +130,7 @@ struct TimelineContainerView: View {
     private func playbackMarkerOverlay(geometry: GeometryProxy) -> some View {
         VStack(spacing: 2) {
             // Current time display above marker - show scrubbing time when dragging
-            let displayTime = timelineState.isDragging ? calculateScrubbingTime() : currentTime
+            let displayTime = timelineState.isDragging ? calculateScrubbingTime(timelineHeight: geometry.size.height) : currentTime
             Text(formatTime(displayTime))
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundColor(.white)
@@ -151,13 +155,13 @@ struct TimelineContainerView: View {
     }
     
     /// Calculate the time being scrubbed to during drag operations
-    private func calculateScrubbingTime() -> TimeInterval {
+    private func calculateScrubbingTime(timelineHeight: CGFloat = 120) -> TimeInterval {
         if timelineState.isDragging && dragStartTime > 0 {
             // Calculate based on current drag state
             // Positive drag (right) = backward in time, negative drag (left) = forward in time
             let timeOffset = Double(lastDragTranslation.width / timelineState.pixelsPerSecond)
             let scrubbingTime = dragStartTime - timeOffset  // Note: minus sign for natural scrolling
-            return handleTimelineBoundaries(scrubbingTime, totalDuration: totalDuration)
+            return handleTimelineBoundaries(scrubbingTime, totalDuration: totalDuration, timelineHeight: timelineHeight)
         }
         return currentTime
     }
@@ -368,7 +372,7 @@ struct TimelineContainerView: View {
     // MARK: - Enhanced Drag Gesture Handlers
     
     /// Handle drag gesture changes for timeline scrubbing with enhanced state tracking
-    private func handleDragChanged(_ value: DragGesture.Value, screenWidth: CGFloat) {
+    private func handleDragChanged(_ value: DragGesture.Value, screenWidth: CGFloat, timelineHeight: CGFloat = 120) {
         // Record frame for performance monitoring
         performanceMonitor.recordFrame()
         
@@ -395,7 +399,7 @@ struct TimelineContainerView: View {
         let totalDragDistance = value.translation.width
         let timeOffset = Double(totalDragDistance / timelineState.pixelsPerSecond)
         let rawTargetTime = dragStartTime - timeOffset  // Note: minus sign for natural scrolling
-        let targetTime = handleTimelineBoundaries(rawTargetTime, totalDuration: totalDuration)
+        let targetTime = handleTimelineBoundaries(rawTargetTime, totalDuration: totalDuration, timelineHeight: timelineHeight)
         
         // Handle edge case: extreme drag values
         guard abs(totalDragDistance) < screenWidth * 3 else {
@@ -426,14 +430,14 @@ struct TimelineContainerView: View {
     }
     
     /// Handle drag gesture end with final state cleanup
-    private func handleDragEnded(_ value: DragGesture.Value, screenWidth: CGFloat) {
+    private func handleDragEnded(_ value: DragGesture.Value, screenWidth: CGFloat, timelineHeight: CGFloat = 120) {
         guard timelineState.isDragging else { return }
         
         // Perform final seek to ensure accuracy based on total drag distance
         if totalDuration > 0 {
             let totalDragDistance = value.translation.width
             let timeOffset = Double(totalDragDistance / timelineState.pixelsPerSecond)
-            let finalTime = handleTimelineBoundaries(dragStartTime - timeOffset, totalDuration: totalDuration)  // Note: minus sign for natural scrolling
+            let finalTime = handleTimelineBoundaries(dragStartTime - timeOffset, totalDuration: totalDuration, timelineHeight: timelineHeight)  // Note: minus sign for natural scrolling
             
             // Final seek without debouncing for precision, with error handling
             timelineState.performImmediateSeek(to: finalTime, player: player) { success, error in
@@ -766,28 +770,33 @@ struct TimelineContainerView: View {
     
     // MARK: - Edge Case Handling
     
-    /// Handle timeline boundary conditions with enhanced edge case management
+    /// Handle timeline boundary conditions with thumbnail-aligned boundaries
     /// This implements task 15 requirement 3: "Handle edge cases like timeline start/end boundaries"
-    private func handleTimelineBoundaries(_ targetTime: TimeInterval, totalDuration: TimeInterval) -> TimeInterval {
-        // Handle negative time (before start)
-        if targetTime < 0 {
-            // Allow slight negative values for smooth boundary handling
-            if targetTime > -0.1 {
-                return 0
+    /// Enhanced to align boundaries with thumbnail width for better visual alignment
+    private func handleTimelineBoundaries(_ targetTime: TimeInterval, totalDuration: TimeInterval, timelineHeight: CGFloat = 120) -> TimeInterval {
+        // Calculate thumbnail-based boundary offsets
+        let thumbnailBoundaryOffset = calculateThumbnailBoundaryOffset(timelineHeight: timelineHeight)
+        
+        // Handle negative time (before start) with thumbnail alignment
+        if targetTime < -thumbnailBoundaryOffset {
+            // Allow thumbnail-width overshoot for smooth boundary handling
+            if targetTime > -thumbnailBoundaryOffset - 0.1 {
+                return -thumbnailBoundaryOffset
             } else {
-                print("Warning: Extreme negative time detected: \(targetTime), clamping to 0")
-                return 0
+                print("Warning: Extreme negative time detected: \(targetTime), clamping to thumbnail boundary: \(-thumbnailBoundaryOffset)")
+                return -thumbnailBoundaryOffset
             }
         }
         
-        // Handle time beyond duration (after end)
-        if targetTime > totalDuration {
+        // Handle time beyond duration (after end) with thumbnail alignment
+        let maxAllowedTime = totalDuration + thumbnailBoundaryOffset
+        if targetTime > maxAllowedTime {
             // Allow slight overshoot for smooth boundary handling
-            if targetTime < totalDuration + 0.1 {
-                return totalDuration
+            if targetTime < maxAllowedTime + 0.1 {
+                return maxAllowedTime
             } else {
-                print("Warning: Time beyond duration detected: \(targetTime) > \(totalDuration), clamping to duration")
-                return totalDuration
+                print("Warning: Time beyond duration detected: \(targetTime) > \(maxAllowedTime), clamping to thumbnail boundary")
+                return maxAllowedTime
             }
         }
         
@@ -798,6 +807,43 @@ struct TimelineContainerView: View {
         }
         
         return targetTime
+    }
+    
+    /// Calculate boundary offset based on thumbnail width for better alignment
+    /// This ensures the playhead boundaries align with thumbnail edges for smoother visual experience
+    /// - Parameter timelineHeight: The actual height of the timeline container
+    private func calculateThumbnailBoundaryOffset(timelineHeight: CGFloat = 120) -> TimeInterval {
+        // Calculate thumbnail dimensions based on timeline height and aspect ratio
+        // This matches the approach used in VideoThumbnailTrackView
+        
+        // Calculate thumbnail height (half of timeline height, matching VideoThumbnailTrackView)
+        let thumbnailHeight = timelineHeight / 2
+        
+        // Get aspect ratio from thumbnail provider (with 16:9 fallback)
+        let thumbnailSize = thumbnailProvider.thumbnailSize
+        let aspectRatio: CGFloat = (thumbnailSize.width > 0 && thumbnailSize.height > 0) 
+            ? thumbnailSize.width / thumbnailSize.height 
+            : 16.0 / 9.0
+        
+        // Calculate thumbnail width based on height and aspect ratio
+        let thumbnailWidth = thumbnailHeight * aspectRatio
+        
+        // Convert thumbnail width to time duration based on current zoom level
+        let thumbnailTimeWidth = Double(thumbnailWidth / timelineState.pixelsPerSecond)
+        
+        // Use half thumbnail width as boundary offset for centered alignment
+        // This allows the playhead to extend half a thumbnail width beyond the video boundaries
+        let boundaryOffset = thumbnailTimeWidth / 2
+        
+        // Ensure minimum boundary offset for smooth interaction
+        let minBoundaryOffset = 0.1 // 100ms minimum
+        let maxBoundaryOffset = 2.0 // 2 seconds maximum to prevent excessive overshoot
+        
+        let clampedOffset = max(minBoundaryOffset, min(maxBoundaryOffset, boundaryOffset))
+        
+        print("ThumbnailBoundary: timelineHeight=\(timelineHeight), thumbnailHeight=\(thumbnailHeight), aspectRatio=\(aspectRatio), thumbnailWidth=\(thumbnailWidth), pixelsPerSecond=\(timelineState.pixelsPerSecond), boundaryOffset=\(clampedOffset)s")
+        
+        return clampedOffset
     }
     
     // Duplicate handleSeekError method removed - using the one defined earlier
@@ -876,7 +922,8 @@ struct TimelineContainerView_Previews: PreviewProvider {
             player: .constant(AVPlayer()),
             currentTime: .constant(30.0),
             totalDuration: .constant(120.0),
-            markers: .constant([])
+            markers: .constant([]),
+            thumbnailProvider: ThumbnailProvider()
         )
         .frame(height: 120)
         .background(Color.black)

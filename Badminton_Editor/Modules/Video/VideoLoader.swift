@@ -422,12 +422,12 @@ class VideoLoader {
     }
     static func handlePHAssetSelection(
         phAsset: PHAsset,
-        thumbnailCache: ThumbnailCache,
+        thumbnailProvider: ThumbnailProvider,
         setCurrentPHAsset: @escaping (PHAsset?) -> Void,
         loadVideoAsset: @escaping (AVAsset) async -> Void
     ) async {
         setCurrentPHAsset(phAsset)
-        await MainActor.run { thumbnailCache.setPHAsset(phAsset) }
+        await MainActor.run { thumbnailProvider.setPHAsset(phAsset) }
         await requestAVAssetFromPHAsset(phAsset, loadVideoAsset: loadVideoAsset)
     }
 

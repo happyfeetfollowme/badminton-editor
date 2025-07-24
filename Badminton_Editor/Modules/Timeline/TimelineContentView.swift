@@ -30,6 +30,9 @@ struct TimelineContentView: View {
     
     /// Callback for marker tap interactions
     let onMarkerTap: ((RallyMarker, CGPoint) -> Void)?
+
+    /// Thumbnail provider for timeline thumbnails
+    @ObservedObject var thumbnailProvider: ThumbnailProvider
     
     // MARK: - Constants
     
@@ -42,74 +45,81 @@ struct TimelineContentView: View {
     // MARK: - Body
     
     var body: some View {
-        // Remove ScrollView and use direct content positioning
-        ZStack(alignment: .leading) {
-            // Background content area
-            timelineBackground
+        GeometryReader { geometry in
+            let timelineHeight = geometry.size.height
             
-            // Timeline ruler (time scale markers)
-            timelineRuler
-            
-            // Video thumbnail track placeholder
-            videoThumbnailTrack
-            
-            // Rally markers overlay
-            rallyMarkersOverlay
+            // Use direct offset positioning for timeline content
+            ZStack(alignment: .leading) {
+                // Background content area
+                timelineBackground(height: timelineHeight)
+                
+                // Timeline ruler (time scale markers)
+                timelineRuler(height: timelineHeight)
+                
+                // Video thumbnail track
+                videoThumbnailTrack(height: timelineHeight)
+                
+                // Rally markers overlay
+                rallyMarkersOverlay(height: timelineHeight)
+            }
+            .frame(
+                width: calculateContentWidth(),
+                height: timelineHeight
+            )
+            .offset(x: contentOffset) // Direct offset control for smooth scrolling
+            .clipped() // Clip content that extends beyond bounds
         }
-        .frame(
-            width: calculateContentWidth(),
-            height: 120 // Standard timeline height
-        )
-        .offset(x: contentOffset) // Direct offset control without ScrollView
-        .clipped() // Clip content that extends beyond bounds
     }
     
     // MARK: - Timeline Background
     
     @ViewBuilder
-    private var timelineBackground: some View {
+    private func timelineBackground(height: CGFloat) -> some View {
         Rectangle()
             .fill(Color.gray.opacity(0.1))
             .frame(
                 width: calculateContentWidth(),
-                height: 120
+                height: height
             )
     }
     
     // MARK: - Timeline Ruler
     
     @ViewBuilder
-    private var timelineRuler: some View {
+    private func timelineRuler(height: CGFloat) -> some View {
         TimelineRulerView(
             totalDuration: totalDuration,
             pixelsPerSecond: pixelsPerSecond,
             currentTime: 0 // Not used in the new implementation, but required for compatibility
         )
+        .frame(height: height)
     }
     
     // MARK: - Video Thumbnail Track
     
     @ViewBuilder
-    private var videoThumbnailTrack: some View {
+    private func videoThumbnailTrack(height: CGFloat) -> some View {
         VideoThumbnailTrackView(
+            thumbnailProvider: thumbnailProvider,
             player: player,
             totalDuration: totalDuration,
             pixelsPerSecond: pixelsPerSecond,
             contentOffset: contentOffset,
             screenWidth: screenWidth
         )
+        .frame(height: height)
     }
     
     // MARK: - Rally Markers Overlay
     
     @ViewBuilder
-    private var rallyMarkersOverlay: some View {
+    private func rallyMarkersOverlay(height: CGFloat) -> some View {
         ZStack(alignment: .leading) {
             ForEach(markers) { marker in
                 MarkerPinView(marker: marker)
                     .position(
                         x: calculateMarkerPosition(for: marker.time),
-                        y: 60 // Center vertically in timeline
+                        y: height / 2 // Center vertically in timeline
                     )
                     .onTapGesture {
                         handleMarkerTap(marker: marker)
@@ -118,7 +128,7 @@ struct TimelineContentView: View {
         }
         .frame(
             width: calculateContentWidth(),
-            height: 120
+            height: height
         )
     }
     
@@ -157,6 +167,7 @@ struct TimelineContentView: View {
 
 struct TimelineContentView_Previews: PreviewProvider {
     static var previews: some View {
+        let dummyProvider = ThumbnailProvider()
         TimelineContentView(
             player: AVPlayer(),
             totalDuration: 120.0,
@@ -171,7 +182,8 @@ struct TimelineContentView_Previews: PreviewProvider {
             ],
             onMarkerTap: { marker, position in
                 print("Marker tapped: \(marker.type) at \(marker.time)")
-            }
+            },
+            thumbnailProvider: dummyProvider
         )
         .frame(height: 120)
         .background(Color.black)
