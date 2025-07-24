@@ -15,47 +15,155 @@ struct ContentView: View {
     @State private var totalDuration: TimeInterval = 0
     @State private var showVideoPicker = false
     @State private var markers: [RallyMarker] = []
-    @StateObject private var thumbnailCache = ThumbnailCache()
+    @StateObject private var thumbnailProvider = ThumbnailProvider()
     @State private var showLoadingAnimation = false
     @State private var currentVideoURL: URL? // This will now store the *copied* video URL
     @State private var photoLibraryAuthorizationStatus: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var currentPHAsset: PHAsset? // Store the current PHAsset for direct access
+    @State private var selectedVideo: AVAsset? // Selected video asset
+    @State private var isExporting = false // Export state
+    
+    // MARK: - Responsive Layout Functions
+    
+    /// Calculate responsive toolbar height based on screen size
+    private func responsiveToolbarHeight(for screenSize: CGSize, isCompact: Bool) -> CGFloat {
+        if isCompact {
+            return 44 // iPhone standard toolbar height
+        } else {
+            return 60 // iPad larger toolbar height
+        }
+    }
+    
+    /// Calculate responsive video player height based on screen size and orientation
+    private func responsiveVideoPlayerHeight(for screenSize: CGSize, isCompact: Bool, isLandscape: Bool) -> CGFloat {
+        let availableHeight = screenSize.height
+        
+        if isCompact {
+            // iPhone sizing
+            if isLandscape {
+                return availableHeight * 0.5 // 50% in landscape for more timeline space
+            } else {
+                return availableHeight * 0.4 // 40% in portrait
+            }
+        } else {
+            // iPad sizing
+            if isLandscape {
+                return availableHeight * 0.6 // 60% in landscape
+            } else {
+                return availableHeight * 0.5 // 50% in portrait
+            }
+        }
+    }
+    
+    /// Calculate responsive timeline height based on screen size
+    private func responsiveTimelineHeight(for screenSize: CGSize, isCompact: Bool) -> CGFloat {
+        let availableHeight = screenSize.height
+        
+        if isCompact {
+            return min(max(availableHeight * 0.15, 80), 140) // 15% with min/max constraints
+        } else {
+            return min(max(availableHeight * 0.18, 120), 200) // 18% with min/max constraints
+        }
+    }
+    
+    /// Calculate responsive controls height
+    private func responsiveControlsHeight(isCompact: Bool) -> CGFloat {
+        return isCompact ? 60 : 80
+    }
+    
+    /// Calculate responsive action toolbar height
+    private func responsiveActionToolbarHeight(isCompact: Bool) -> CGFloat {
+        return isCompact ? 70 : 90
+    }
+    
+    /// Calculate responsive spacing between controls
+    private func responsiveControlSpacing(isCompact: Bool) -> CGFloat {
+        return isCompact ? 8 : 12
+    }
+    
+    /// Calculate responsive vertical padding
+    private func responsiveVerticalPadding(isCompact: Bool) -> CGFloat {
+        return isCompact ? 8 : 12
+    }
     var body: some View {
-        ZStack {
-            Color.black.edgesIgnoringSafeArea(.all)
-            VStack(spacing: 0) {
-                TopToolbarView(
-                    onExport: { /* 導出邏輯 */ },
-                    onSelectVideo: {
-                        requestPhotoLibraryPermissions { granted in
-                            showVideoPicker = granted
+        GeometryReader { geometry in
+            let screenSize = geometry.size
+            let isCompact = screenSize.width < 700 // iPhone and compact sizes
+            let isLandscape = screenSize.width > screenSize.height
+            
+            ZStack {
+                Color.black.edgesIgnoringSafeArea(.all)
+                
+                VStack(spacing: 0) {
+                    // Top Toolbar - responsive height
+                    TopToolbarView(
+                        onExport: { /* 導出邏輯 */ },
+                        onSelectVideo: {
+                            requestPhotoLibraryPermissions { granted in
+                                showVideoPicker = granted
+                            }
                         }
-                    }
-                )
-                VideoPlayerView(player: $player, isPlaying: $isPlaying, currentTime: $currentTime, totalDuration: $totalDuration)
+                    )
+                    .frame(height: responsiveToolbarHeight(for: screenSize, isCompact: isCompact))
+                    
+                    // Video Player - responsive sizing
+                    VideoPlayerView(
+                        player: $player, 
+                        isPlaying: $isPlaying, 
+                        currentTime: $currentTime, 
+                        totalDuration: $totalDuration
+                    )
+                    .frame(height: responsiveVideoPlayerHeight(for: screenSize, isCompact: isCompact, isLandscape: isLandscape))
                     .onTapGesture {
                         guard player.currentItem != nil else { return }
                         isPlaying.toggle()
                         isPlaying ? player.play() : player.pause()
                     }
-                VStack(spacing: 8) {
-                    TimelineContainerView(
-                        player: $player,
-                        currentTime: $currentTime,
-                        totalDuration: $totalDuration,
-                        markers: $markers
-                    ).frame(height: 120)
-                    PlaybackControlsView(
-                        player: $player,
-                        isPlaying: $isPlaying,
-                        currentTime: $currentTime,
-                        totalDuration: $totalDuration
+                    
+                    // Timeline and Controls Container - responsive spacing and sizing
+                    VStack(spacing: responsiveControlSpacing(isCompact: isCompact)) {
+                        // Timeline Container - responsive height
+                        TimelineContainerView(
+                            player: $player,
+                            currentTime: $currentTime,
+                            totalDuration: $totalDuration,
+                            markers: $markers,
+                            thumbnailProvider: thumbnailProvider
+                        )
+                        .frame(height: responsiveTimelineHeight(for: screenSize, isCompact: isCompact))
+                        
+                        // Playback Controls - responsive sizing
+                        PlaybackControlsView(
+                            player: $player,
+                            isPlaying: $isPlaying,
+                            currentTime: $currentTime,
+                            totalDuration: $totalDuration
+                        )
+                        .frame(height: responsiveControlsHeight(isCompact: isCompact))
+                    }
+                    .padding(.vertical, responsiveVerticalPadding(isCompact: isCompact))
+                    
+                    // Main Action Toolbar - responsive height
+                    MainActionToolbarView(
+                        selectedVideo: $selectedVideo,
+                        showingVideoPicker: $showVideoPicker,
+                        isExporting: $isExporting,
+                        onExport: {
+                            exportVideo()
+                        }
                     )
-                }.padding(.vertical, 10)
-                MainActionToolbarView()
-            }
-            if showLoadingAnimation {
-                BasicLoadingIndicator(onCancel: { showLoadingAnimation = false })
+                    .frame(height: responsiveActionToolbarHeight(isCompact: isCompact))
+                    .onChange(of: selectedVideo) { oldValue, newValue in
+                        // If selectedVideo is set to nil and it had a value before, perform full reset
+                        if oldValue != nil && newValue == nil {
+                            resetVideo()
+                        }
+                    }
+                }
+                
+                if showLoadingAnimation {
+                    BasicLoadingIndicator(onCancel: { showLoadingAnimation = false })
+                }
             }
         }
         .preferredColorScheme(.dark)
@@ -98,9 +206,10 @@ struct ContentView: View {
     private func handlePHAssetSelection(with phAsset: PHAsset) async {
         await VideoLoader.handlePHAssetSelection(
             phAsset: phAsset,
-            thumbnailCache: thumbnailCache,
+            thumbnailProvider: thumbnailProvider,
             setCurrentPHAsset: { self.currentPHAsset = $0 },
             loadVideoAsset: { asset in
+                self.selectedVideo = asset // Set the selected video
                 await VideoLoader.loadVideoAsset(
                     asset: asset,
                     player: player,
@@ -124,6 +233,7 @@ struct ContentView: View {
             localURL: localURL,
             setCurrentVideoURL: { self.currentVideoURL = $0 },
             loadVideoAsset: { asset in
+                self.selectedVideo = asset // Set the selected video
                 await VideoLoader.loadVideoAsset(
                     asset: asset,
                     player: player,
@@ -139,6 +249,39 @@ struct ContentView: View {
                 )
             }
         )
+    }
+    
+    /// Exports the current video with applied edits
+    private func exportVideo() {
+        guard selectedVideo != nil else { return }
+        
+        isExporting = true
+        
+        // TODO: Implement actual video export functionality
+        // This is a placeholder that simulates export process
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            isExporting = false
+            // Show success message or handle export completion
+        }
+    }
+    
+    /// Resets the video editor to initial state
+    private func resetVideo() {
+        // Reset player
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        
+        // Reset state variables
+        selectedVideo = nil
+        isPlaying = false
+        currentTime = 0
+        totalDuration = 0
+        markers = []
+        currentVideoURL = nil
+        currentPHAsset = nil
+        
+        // Reset thumbnail provider
+        thumbnailProvider.clear()
     }
     
 }
