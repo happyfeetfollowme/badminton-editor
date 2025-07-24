@@ -11,7 +11,7 @@
 				"-scheme",
 				"Badminton_Editor",
 				"-destination",
-				"platform=iOS Simulator,name=iPhone 15",
+				"platform=iOS Simulator,name=iPhone 16",
 				"build"
 			],
 			"group": "build",
