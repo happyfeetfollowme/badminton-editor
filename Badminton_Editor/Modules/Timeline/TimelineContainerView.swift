@@ -40,8 +40,6 @@ struct TimelineContainerView: View {
                 
                 // Main timeline content stack
                 ZStack {
-                    // Timeline content will be added in future tasks
-                    // For now, we create the basic structure with placeholder content
                     timelineContentArea(geometry: geometry)
                     
                     // Fixed playback marker overlay
@@ -129,20 +127,7 @@ struct TimelineContainerView: View {
     @ViewBuilder
     private func playbackMarkerOverlay(geometry: GeometryProxy) -> some View {
         VStack(spacing: 2) {
-            // Current time display above marker - show scrubbing time when dragging
-            let displayTime = timelineState.isDragging ? calculateScrubbingTime(timelineHeight: geometry.size.height) : currentTime
-            Text(formatTime(displayTime))
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(timelineState.isDragging ? Color.blue.opacity(0.9) : Color.black.opacity(0.9))
-                .cornerRadius(6)
-                .shadow(color: .black.opacity(0.4), radius: 3, x: 0, y: 2)
-                .scaleEffect(timelineState.isDragging ? 1.1 : 1.0)
-                .animation(.easeInOut(duration: 0.2), value: timelineState.isDragging)
-            
-            // Fixed playback marker line - highlight when scrubbing
+           // Fixed playback marker line - highlight when scrubbing
             Rectangle()
                 .fill(timelineState.isDragging ? Color.blue : Color.white)
                 .frame(width: timelineState.isDragging ? 3 : 2)
