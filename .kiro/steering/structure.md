@@ -23,7 +23,6 @@ Badminton_Editor.xcodeproj/         # Xcode project files
 ## Module Organization
 
 ### Timeline Module (`Modules/Timeline/`)
-- **TimelineModels.swift**: Data models (RallyMarker, MarkerPinView, etc.)
 - **TimelineState.swift**: Timeline state management
 - **TimelineContainerView.swift**: Main timeline container
 - **TimelineContentView.swift**: Timeline content and interactions
@@ -42,7 +41,7 @@ Badminton_Editor.xcodeproj/         # Xcode project files
 
 ### Files
 - **Views**: Suffix with `View` (e.g., `TimelineContentView`)
-- **Models**: Descriptive names (e.g., `RallyMarker`, `VideoCodecInfo`)
+// ...existing code...
 - **Utilities**: Suffix with appropriate type (e.g., `VideoLoader`, `ThumbnailProvider`)
 
 ### Code Structure

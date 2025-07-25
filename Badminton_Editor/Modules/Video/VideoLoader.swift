@@ -378,7 +378,6 @@ class VideoLoader {
         player: AVPlayer,
         setCurrentTime: @escaping (TimeInterval) -> Void,
         setTotalDuration: @escaping (TimeInterval) -> Void,
-        setMarkers: @escaping ([RallyMarker]) -> Void,
         setShowLoadingAnimation: @escaping (Bool) -> Void,
         applyInstantGPUOptimizations: @escaping (AVPlayerItem, VideoCodecInfo) async -> Void,
         configureDetailedGPUAcceleration: @escaping (AVPlayerItem, AVAsset, VideoCodecInfo) async -> Void,
@@ -393,7 +392,6 @@ class VideoLoader {
             player.isMuted = false
             player.volume = 1.0
             setCurrentTime(0.0)
-            setMarkers([])
             print("VideoLoader: 播放器已立即設置，開始預載")
         }
         await MainActor.run {

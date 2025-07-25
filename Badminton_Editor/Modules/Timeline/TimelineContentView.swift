@@ -25,12 +25,6 @@ struct TimelineContentView: View {
     /// Screen width for calculations
     let screenWidth: CGFloat
     
-    /// Rally markers to display on timeline
-    let markers: [RallyMarker]
-    
-    /// Callback for marker tap interactions
-    let onMarkerTap: ((RallyMarker, CGPoint) -> Void)?
-
     /// Thumbnail provider for timeline thumbnails
     @ObservedObject var thumbnailProvider: ThumbnailProvider
     
@@ -56,8 +50,6 @@ struct TimelineContentView: View {
                 // Video thumbnail track
                 videoThumbnailTrack(height: timelineHeight)
                 
-                // Rally markers overlay
-                rallyMarkersOverlay(height: timelineHeight)
             }
             .frame(
                 width: calculateContentWidth(),
@@ -95,27 +87,6 @@ struct TimelineContentView: View {
         .frame(height: height)
     }
     
-    // MARK: - Rally Markers Overlay
-    
-    @ViewBuilder
-    private func rallyMarkersOverlay(height: CGFloat) -> some View {
-        ZStack(alignment: .leading) {
-            ForEach(markers) { marker in
-                MarkerPinView(marker: marker)
-                    .position(
-                        x: calculateMarkerPosition(for: marker.time),
-                        y: height / 2 // Center vertically in timeline
-                    )
-                    .onTapGesture {
-                        handleMarkerTap(marker: marker)
-                    }
-            }
-        }
-        .frame(
-            width: calculateContentWidth(),
-            height: height
-        )
-    }
     
     // MARK: - Helper Methods
     
@@ -128,17 +99,6 @@ struct TimelineContentView: View {
         return contentWidth + baseOffset + boundaryPadding
     }
     
-    /// Calculate marker position on timeline
-    private func calculateMarkerPosition(for time: TimeInterval) -> CGFloat {
-        return baseOffset + CGFloat(time) * pixelsPerSecond
-    }
-    
-    /// Handle marker tap interaction
-    private func handleMarkerTap(marker: RallyMarker) {
-        let markerPosition = calculateMarkerPosition(for: marker.time)
-        let tapPoint = CGPoint(x: markerPosition, y: 60)
-        onMarkerTap?(marker, tapPoint)
-    }
     
     /// Format time for display
     private func formatTime(_ time: TimeInterval) -> String {
@@ -160,14 +120,6 @@ struct TimelineContentView_Previews: PreviewProvider {
             contentOffset: .constant(0),
             isDragging: false,
             screenWidth: 400,
-            markers: [
-                RallyMarker(time: 30.0, type: .start),
-                RallyMarker(time: 45.0, type: .end),
-                RallyMarker(time: 60.0, type: .start)
-            ],
-            onMarkerTap: { marker, position in
-                print("Marker tapped: \(marker.type) at \(marker.time)")
-            },
             thumbnailProvider: dummyProvider
         )
         .frame(height: 120)

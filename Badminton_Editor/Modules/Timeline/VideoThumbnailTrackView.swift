@@ -122,7 +122,6 @@ struct VideoThumbnailTrackView: View {
     @ViewBuilder
     private func thumbnailSlot(for time: TimeInterval, size: CGSize) -> some View {
         if let thumbnail = findClosestThumbnail(for: time) {
-            let _ = print("Timeline thumbnail display size: \(size) for time: \(time)")
             Image(uiImage: thumbnail)
                 .resizable()
                 .frame(width: size.width, height: size.height) // Use exact size, no aspect ratio override
