@@ -79,22 +79,33 @@ struct VideoThumbnailTrackView: View {
                     let spacingBetweenThumbnails = thumbnailSize.width // No padding, edge-to-edge
                     let _ = print("Thumbnail spacing: interval=\(thumbnailInterval)s, pixelsPerSecond=\(pixelsPerSecond), spacing=\(spacingBetweenThumbnails)pts, thumbnailWidth=\(thumbnailSize.width)pts")
 
+                    // Space for timestamp above thumbnails
+                    let timestampHeight: CGFloat = 16
+                    let verticalSpacing: CGFloat = 4
                     ZStack(alignment: .leading) {
-                        // Base offset space
+                        // Base offset space (now taller to fit timestamp + spacing + thumbnail)
                         Rectangle()
                             .fill(Color.clear)
-                            .frame(width: calculateContentWidth(thumbnailWidth: thumbnailSize.width), height: thumbnailSize.height)
+                            .frame(width: calculateContentWidth(thumbnailWidth: thumbnailSize.width), height: timestampHeight + verticalSpacing + thumbnailSize.height)
 
-                        // Position thumbnails at their exact time positions
+                        // Position timestamp and thumbnail for each time
                         ForEach(thumbnailTimes, id: \.self) { time in
-                            thumbnailSlot(for: time, size: thumbnailSize)
-                                .position(
-                                    x: baseOffset + CGFloat(time) * pixelsPerSecond + thumbnailSize.width / 2,
-                                    y: thumbnailSize.height / 2
-                                )
+                            VStack(spacing: verticalSpacing) {
+                                // Timestamp marker
+                                Text(formatTime(time))
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .frame(height: timestampHeight)
+                                // Thumbnail
+                                thumbnailSlot(for: time, size: thumbnailSize)
+                            }
+                            .position(
+                                x: baseOffset + CGFloat(time) * pixelsPerSecond + thumbnailSize.width / 2,
+                                y: timestampHeight / 2 + verticalSpacing + thumbnailSize.height / 2
+                            )
                         }
                     }
-                    .frame(width: calculateContentWidth(thumbnailWidth: thumbnailSize.width), height: thumbnailSize.height)
+                    .frame(width: calculateContentWidth(thumbnailWidth: thumbnailSize.width), height: timestampHeight + verticalSpacing + thumbnailSize.height)
                 }
             }
         }
