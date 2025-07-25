@@ -6,7 +6,6 @@ Badminton Editor is a native iOS video editing application specifically designed
 
 - **Video Import**: Import videos directly from iOS Photo Library with PHAsset integration
 - **Timeline Interface**: Visual timeline with thumbnail previews and time markers
-- **Rally Marking**: Add start/end markers for badminton rallies on the timeline
 - **Responsive Design**: Adaptive UI that works on both iPhone and iPad with different orientations
 - **Hardware Acceleration**: GPU-optimized video playback with codec detection (H.264/HEVC)
 - **Export Functionality**: Export edited videos with applied modifications

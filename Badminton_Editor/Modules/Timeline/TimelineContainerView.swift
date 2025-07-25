@@ -9,7 +9,6 @@ struct TimelineContainerView: View {
     @Binding var player: AVPlayer
     @Binding var currentTime: TimeInterval
     @Binding var totalDuration: TimeInterval
-    @Binding var markers: [RallyMarker]
     @ObservedObject var thumbnailProvider: ThumbnailProvider
     
     // MARK: - State Management
@@ -17,7 +16,6 @@ struct TimelineContainerView: View {
     @StateObject private var performanceMonitor = PerformanceMonitor()
     @State private var showMarkerMenu = false
     @State private var menuPosition: CGPoint = .zero
-    @State private var selectedMarker: RallyMarker? = nil
     
     // MARK: - Drag Gesture State
     @State private var dragStartTime: TimeInterval = 0
@@ -50,9 +48,6 @@ struct TimelineContainerView: View {
                 }
                 .coordinateSpace(name: "timeline")
                 .clipped()
-                
-                // Marker action menu overlay
-                markerMenuOverlay()
                 
                 // Performance monitoring overlay (debug mode)
                 if ProcessInfo.processInfo.environment["DEBUG_PERFORMANCE"] != nil {
@@ -98,10 +93,6 @@ struct TimelineContainerView: View {
                 contentOffset: $timelineState.contentOffset,
                 isDragging: timelineState.isDragging,
                 screenWidth: geometry.size.width,
-                markers: markers,
-                onMarkerTap: { marker, position in
-                    handleMarkerTap(marker: marker, position: position, screenWidth: geometry.size.width)
-                },
                 thumbnailProvider: thumbnailProvider
             )
             .simultaneousGesture(
@@ -215,23 +206,6 @@ struct TimelineContainerView: View {
             .padding(.trailing, 12)
             .padding(.top, 8)
         }
-    }
-    
-    // MARK: - Marker Menu Overlay
-    
-    @ViewBuilder
-    private func markerMenuOverlay() -> some View {
-        MarkerActionMenu(
-            isPresented: $showMarkerMenu,
-            position: $menuPosition,
-            marker: selectedMarker,
-            onAdd: { type in
-                addMarkerAtCurrentTime(type: type)
-            },
-            onDelete: {
-                deleteSelectedMarker()
-            }
-        )
     }
     
     // MARK: - Helper Methods
@@ -526,9 +500,6 @@ struct TimelineContainerView: View {
     
     /// Handle double tap gesture for marker menu
     private func handleDoubleTapGesture(_ location: CGPoint) {
-        menuPosition = CGPoint(x: location.x, y: location.y - 40)
-        selectedMarker = nil
-        showMarkerMenu = true
     }
     
     // MARK: - Enhanced Zoom Controls
@@ -716,43 +687,6 @@ struct TimelineContainerView: View {
         }
     }
     
-    // MARK: - Marker Management
-    
-    /// Handle marker tap interaction
-    /// This implements task 14 requirement 3: "Maintain marker interaction functionality (tap to show menu, add/delete markers)"
-    private func handleMarkerTap(marker: RallyMarker, position: CGPoint, screenWidth: CGFloat) {
-        // Convert marker position from timeline content coordinates to screen coordinates
-        // Account for the content offset to get the correct screen position
-        let screenX = position.x + timelineState.contentOffset
-        let screenY = position.y
-        
-        // Ensure the menu appears within screen bounds
-        let adjustedX = max(50, min(screenWidth - 150, screenX))
-        let adjustedY = max(50, screenY - 40)
-        
-        // Set up the marker menu
-        selectedMarker = marker
-        menuPosition = CGPoint(x: adjustedX, y: adjustedY)
-        showMarkerMenu = true
-    }
-    
-    /// Add marker at current time
-    private func addMarkerAtCurrentTime(type: RallyMarker.MarkerType) {
-        let newMarker = RallyMarker(time: currentTime, type: type)
-        markers.append(newMarker)
-        markers.sort { $0.time < $1.time }
-        showMarkerMenu = false
-    }
-    
-    /// Delete the currently selected marker
-    private func deleteSelectedMarker() {
-        if let markerToDelete = selectedMarker {
-            markers.removeAll { $0.id == markerToDelete.id }
-        }
-        showMarkerMenu = false
-        selectedMarker = nil
-    }
-    
     // MARK: - Edge Case Handling
     
     /// Handle timeline boundary conditions with thumbnail-aligned boundaries
@@ -895,10 +829,6 @@ struct TimelineContainerView: View {
     }
 }
 
-// MARK: - Helper Functions
-
-// ...existing code...
-
 // MARK: - Preview
 
 struct TimelineContainerView_Previews: PreviewProvider {
@@ -907,7 +837,6 @@ struct TimelineContainerView_Previews: PreviewProvider {
             player: .constant(AVPlayer()),
             currentTime: .constant(30.0),
             totalDuration: .constant(120.0),
-            markers: .constant([]),
             thumbnailProvider: ThumbnailProvider()
         )
         .frame(height: 120)

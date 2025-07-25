@@ -14,7 +14,6 @@ struct ContentView: View {
     @State private var currentTime: TimeInterval = 0
     @State private var totalDuration: TimeInterval = 0
     @State private var showVideoPicker = false
-    @State private var markers: [RallyMarker] = []
     @StateObject private var thumbnailProvider = ThumbnailProvider()
     @State private var showLoadingAnimation = false
     @State private var currentVideoURL: URL? // This will now store the *copied* video URL
@@ -121,7 +120,7 @@ struct ContentView: View {
                             player: $player,
                             currentTime: $currentTime,
                             totalDuration: $totalDuration,
-                            markers: $markers,
+                            // ...existing code...
                             thumbnailProvider: thumbnailProvider
                         )
                         .frame(height: responsiveTimelineHeight(for: screenSize, isCompact: isCompact))
@@ -212,7 +211,7 @@ struct ContentView: View {
                     player: player,
                     setCurrentTime: { self.currentTime = $0 },
                     setTotalDuration: { self.totalDuration = $0 },
-                    setMarkers: { self.markers = $0 },
+                    // ...existing code...
                     setShowLoadingAnimation: { self.showLoadingAnimation = $0 },
                     applyInstantGPUOptimizations: VideoLoader.applyInstantGPUOptimizations,
                     configureDetailedGPUAcceleration: VideoLoader.configureDetailedGPUAcceleration,
@@ -236,7 +235,7 @@ struct ContentView: View {
                     player: player,
                     setCurrentTime: { self.currentTime = $0 },
                     setTotalDuration: { self.totalDuration = $0 },
-                    setMarkers: { self.markers = $0 },
+                    // ...existing code...
                     setShowLoadingAnimation: { self.showLoadingAnimation = $0 },
                     applyInstantGPUOptimizations: VideoLoader.applyInstantGPUOptimizations,
                     configureDetailedGPUAcceleration: VideoLoader.configureDetailedGPUAcceleration,
@@ -273,7 +272,7 @@ struct ContentView: View {
         isPlaying = false
         currentTime = 0
         totalDuration = 0
-        markers = []
+        // ...existing code...
         currentVideoURL = nil
         currentPHAsset = nil
         
