@@ -35,13 +35,10 @@ struct VideoThumbnailTrackView: View {
     }
 
     /// Get the actual thumbnail size from the provider, scaled appropriately for timeline display
-    private var actualThumbnailSize: CGSize {
-        // Force square thumbnails for timeline display
-        let squareSize: CGFloat = 80 // Square size for timeline thumbnails
+    private func actualThumbnailSize(for timelineHeight: CGFloat) -> CGSize {
+        // Make the thumbnail size one fourth of the timeline height, always square
+        let squareSize = timelineHeight / 4.0
         return CGSize(width: squareSize, height: squareSize)
-        
-        // Fallback to 16:9 aspect ratio
-        return CGSize(width: 142, height: 80) // 16:9 at 80px height
     }
     
     /// Helper to determine if we're on a compact screen (iPhone/small iPad)
@@ -52,11 +49,10 @@ struct VideoThumbnailTrackView: View {
     // MARK: - Body (after all properties)
     var body: some View {
         GeometryReader { geometry in
-            let thumbnailSize = actualThumbnailSize
-            
+            let timelineHeight = geometry.size.height
+            let thumbnailSize = actualThumbnailSize(for: timelineHeight)
             // Debug logging
             let _ = print("VideoThumbnailTrackView: Using actual thumbnail size: \(thumbnailSize), provider size: \(thumbnailProvider.thumbnailSize)")
-            
             ZStack(alignment: .leading) {
                 if thumbnailProvider.isGenerating {
                     HStack {
@@ -77,27 +73,40 @@ struct VideoThumbnailTrackView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     // Generate thumbnails based on zoom level and duration
-                    let thumbnailInterval = calculateThumbnailInterval()
+                    // For no padding, set interval so that thumbnails are edge-to-edge
+                    let thumbnailInterval = thumbnailSize.width / pixelsPerSecond
                     let thumbnailTimes = generateThumbnailTimes(interval: thumbnailInterval)
-                    let spacingBetweenThumbnails = thumbnailInterval * pixelsPerSecond
+                    let spacingBetweenThumbnails = thumbnailSize.width // No padding, edge-to-edge
                     let _ = print("Thumbnail spacing: interval=\(thumbnailInterval)s, pixelsPerSecond=\(pixelsPerSecond), spacing=\(spacingBetweenThumbnails)pts, thumbnailWidth=\(thumbnailSize.width)pts")
-                    
+
+                    // Space for timestamp above thumbnails
+                    let timestampHeight: CGFloat = 16
+                    let verticalSpacing: CGFloat = 4
                     ZStack(alignment: .leading) {
-                        // Base offset space
+                        // Base offset space (now taller to fit timestamp + spacing + thumbnail)
                         Rectangle()
                             .fill(Color.clear)
-                            .frame(width: calculateContentWidth(), height: thumbnailSize.height)
-                        
-                        // Position thumbnails at their exact time positions
+                            .frame(width: calculateContentWidth(thumbnailWidth: thumbnailSize.width), height: timestampHeight + verticalSpacing + thumbnailSize.height)
+
+                        // Position timestamp and thumbnail for each time
                         ForEach(thumbnailTimes, id: \.self) { time in
-                            thumbnailSlot(for: time, size: thumbnailSize)
-                                .position(
-                                    x: baseOffset + CGFloat(time) * pixelsPerSecond + thumbnailSize.width / 2,
-                                    y: thumbnailSize.height / 2
-                                )
+                            VStack(alignment: .leading, spacing: verticalSpacing) {
+                                // Timestamp marker aligned to the beginning of the second
+                                Text(formatTime(time))
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .frame(width: thumbnailSize.width, height: timestampHeight, alignment: .leading)
+
+                                // Thumbnail
+                                thumbnailSlot(for: time, size: thumbnailSize)
+                            }
+                            .position(
+                                x: baseOffset + CGFloat(time) * pixelsPerSecond,
+                                y: timestampHeight / 2 + verticalSpacing + thumbnailSize.height / 2
+                            )
                         }
                     }
-                    .frame(width: calculateContentWidth(), height: thumbnailSize.height)
+                    .frame(width: calculateContentWidth(thumbnailWidth: thumbnailSize.width), height: timestampHeight + verticalSpacing + thumbnailSize.height)
                 }
             }
         }
@@ -157,16 +166,14 @@ struct VideoThumbnailTrackView: View {
     }
     
     /// Calculate appropriate thumbnail interval based on zoom level
+    /// - Parameter thumbnailWidth: The width of the thumbnail
     /// - Returns: Time interval between thumbnails
-    private func calculateThumbnailInterval() -> TimeInterval {
+    private func calculateThumbnailInterval(thumbnailWidth: CGFloat) -> TimeInterval {
         // Fixed 1 second interval for consistent playback representation
         let fixedInterval: TimeInterval = 1.0
-        
         // Ensure thumbnails don't overlap by using exact thumbnail width
-        let thumbnailSize = actualThumbnailSize
-        let minSpacingPoints = thumbnailSize.width // No padding - edge to edge
+        let minSpacingPoints = thumbnailWidth // No padding - edge to edge
         let minInterval = minSpacingPoints / pixelsPerSecond
-        
         // Use larger of fixed interval or minimum spacing to prevent overlap
         return max(fixedInterval, minInterval)
     }
@@ -191,9 +198,9 @@ struct VideoThumbnailTrackView: View {
     }
     
     /// Calculate total content width including padding
-    private func calculateContentWidth() -> CGFloat {
+    /// - Parameter thumbnailWidth: The width of the thumbnail
+    private func calculateContentWidth(thumbnailWidth: CGFloat) -> CGFloat {
         guard totalDuration > 0 else { return screenWidth }
-        
         // Base content width + base offset + boundary padding
         let contentWidth = CGFloat(totalDuration) * pixelsPerSecond
         return contentWidth + baseOffset + boundaryPadding

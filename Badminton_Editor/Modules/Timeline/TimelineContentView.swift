@@ -53,9 +53,6 @@ struct TimelineContentView: View {
                 // Background content area
                 timelineBackground(height: timelineHeight)
                 
-                // Timeline ruler (time scale markers)
-                timelineRuler(height: timelineHeight)
-                
                 // Video thumbnail track
                 videoThumbnailTrack(height: timelineHeight)
                 
@@ -81,18 +78,6 @@ struct TimelineContentView: View {
                 width: calculateContentWidth(),
                 height: height
             )
-    }
-    
-    // MARK: - Timeline Ruler
-    
-    @ViewBuilder
-    private func timelineRuler(height: CGFloat) -> some View {
-        TimelineRulerView(
-            totalDuration: totalDuration,
-            pixelsPerSecond: pixelsPerSecond,
-            currentTime: 0 // Not used in the new implementation, but required for compatibility
-        )
-        .frame(height: height)
     }
     
     // MARK: - Video Thumbnail Track

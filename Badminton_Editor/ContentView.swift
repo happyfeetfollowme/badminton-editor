@@ -27,11 +27,9 @@ struct ContentView: View {
     
     /// Calculate responsive toolbar height based on screen size
     private func responsiveToolbarHeight(for screenSize: CGSize, isCompact: Bool) -> CGFloat {
-        if isCompact {
-            return 44 // iPhone standard toolbar height
-        } else {
-            return 60 // iPad larger toolbar height
-        }
+        let availableHeight = screenSize.height
+
+        return availableHeight * 0.05 // 5% of screen height
     }
     
     /// Calculate responsive video player height based on screen size and orientation
@@ -60,20 +58,22 @@ struct ContentView: View {
         let availableHeight = screenSize.height
         
         if isCompact {
-            return min(max(availableHeight * 0.15, 80), 140) // 15% with min/max constraints
+            return availableHeight * 0.35 // 40% with min/max constraints
         } else {
-            return min(max(availableHeight * 0.18, 120), 200) // 18% with min/max constraints
+            return availableHeight * 0.4 // 50% with min/max constraints
         }
     }
     
     /// Calculate responsive controls height
-    private func responsiveControlsHeight(isCompact: Bool) -> CGFloat {
-        return isCompact ? 60 : 80
+    private func responsiveControlsHeight(for screenSize: CGSize, isCompact: Bool) -> CGFloat {
+        let availableHeight = screenSize.height
+        return isCompact ? availableHeight * 0.05 : availableHeight * 0.1
     }
-    
+
     /// Calculate responsive action toolbar height
-    private func responsiveActionToolbarHeight(isCompact: Bool) -> CGFloat {
-        return isCompact ? 70 : 90
+    private func responsiveActionToolbarHeight(for screenSize: CGSize, isCompact: Bool) -> CGFloat {
+        let availableHeight = screenSize.height
+        return isCompact ? availableHeight * 0.05 : availableHeight * 0.1
     }
     
     /// Calculate responsive spacing between controls
@@ -81,10 +81,6 @@ struct ContentView: View {
         return isCompact ? 8 : 12
     }
     
-    /// Calculate responsive vertical padding
-    private func responsiveVerticalPadding(isCompact: Bool) -> CGFloat {
-        return isCompact ? 8 : 12
-    }
     var body: some View {
         GeometryReader { geometry in
             let screenSize = geometry.size
@@ -106,23 +102,21 @@ struct ContentView: View {
                     )
                     .frame(height: responsiveToolbarHeight(for: screenSize, isCompact: isCompact))
                     
-                    // Video Player - responsive sizing
-                    VideoPlayerView(
-                        player: $player, 
-                        isPlaying: $isPlaying, 
-                        currentTime: $currentTime, 
-                        totalDuration: $totalDuration
-                    )
-                    .frame(height: responsiveVideoPlayerHeight(for: screenSize, isCompact: isCompact, isLandscape: isLandscape))
-                    .onTapGesture {
-                        guard player.currentItem != nil else { return }
-                        isPlaying.toggle()
-                        isPlaying ? player.play() : player.pause()
-                    }
-                    
-                    // Timeline and Controls Container - responsive spacing and sizing
+                    // Main content (video player, timeline, controls)
                     VStack(spacing: responsiveControlSpacing(isCompact: isCompact)) {
-                        // Timeline Container - responsive height
+                        VideoPlayerView(
+                            player: $player,
+                            isPlaying: $isPlaying,
+                            currentTime: $currentTime,
+                            totalDuration: $totalDuration
+                        )
+                        .frame(height: responsiveVideoPlayerHeight(for: screenSize, isCompact: isCompact, isLandscape: isLandscape))
+                        .onTapGesture {
+                            guard player.currentItem != nil else { return }
+                            isPlaying.toggle()
+                            isPlaying ? player.play() : player.pause()
+                        }
+
                         TimelineContainerView(
                             player: $player,
                             currentTime: $currentTime,
@@ -131,17 +125,18 @@ struct ContentView: View {
                             thumbnailProvider: thumbnailProvider
                         )
                         .frame(height: responsiveTimelineHeight(for: screenSize, isCompact: isCompact))
-                        
-                        // Playback Controls - responsive sizing
+
                         PlaybackControlsView(
                             player: $player,
                             isPlaying: $isPlaying,
                             currentTime: $currentTime,
                             totalDuration: $totalDuration
                         )
-                        .frame(height: responsiveControlsHeight(isCompact: isCompact))
+                        .frame(height: responsiveControlsHeight(for: screenSize, isCompact: isCompact))
                     }
-                    .padding(.vertical, responsiveVerticalPadding(isCompact: isCompact))
+                    .frame(maxWidth: .infinity)
+
+                    Spacer() // Pushes the Main Action Toolbar to the bottom
                     
                     // Main Action Toolbar - responsive height
                     MainActionToolbarView(
@@ -152,14 +147,16 @@ struct ContentView: View {
                             exportVideo()
                         }
                     )
-                    .frame(height: responsiveActionToolbarHeight(isCompact: isCompact))
+                    .frame(height: responsiveActionToolbarHeight(for: screenSize, isCompact: isCompact))
                     .onChange(of: selectedVideo) { oldValue, newValue in
                         // If selectedVideo is set to nil and it had a value before, perform full reset
                         if oldValue != nil && newValue == nil {
                             resetVideo()
                         }
                     }
+                    .background(Color(red: 33/255, green: 31/255, blue: 31/255))
                 }
+                .frame(maxHeight: .infinity, alignment: .top)
                 
                 if showLoadingAnimation {
                     BasicLoadingIndicator(onCancel: { showLoadingAnimation = false })
