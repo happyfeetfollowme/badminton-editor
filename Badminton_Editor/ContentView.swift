@@ -272,7 +272,6 @@ struct ContentView: View {
         isPlaying = false
         currentTime = 0
         totalDuration = 0
-        // ...existing code...
         currentVideoURL = nil
         currentPHAsset = nil
         
