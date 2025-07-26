@@ -2,6 +2,8 @@ import SwiftUI
 import Foundation
 import AVFoundation
 
+
+
 // MARK: - Seek Error Types
 
 /// Errors that can occur during seek operations
@@ -26,7 +28,7 @@ enum SeekError: Error, LocalizedError {
 }
 
 /// Core timeline state management for the scrubbing timeline feature
-/// Manages zoom levels, content offset, and coordinate conversions
+/// Manages zoom levels, content offset, coordinate conversions, and clip management
 class TimelineState: ObservableObject {
     // MARK: - Published Properties
     
@@ -47,6 +49,26 @@ class TimelineState: ObservableObject {
     
     /// Whether the timeline is currently being actively scrubbed
     @Published var isActivelyScrubbing: Bool = false
+    
+    // MARK: - Clip Management Properties
+    
+    /// Manages video clips and split points
+    private var _clipManager: ClipManager?
+    var clipManager: ClipManager {
+        if _clipManager == nil {
+            _clipManager = ClipManager()
+        }
+        return _clipManager!
+    }
+    
+    /// Manages context menu state for clip operations
+    private var _menuState: MenuState?
+    var menuState: MenuState {
+        if _menuState == nil {
+            _menuState = MenuState()
+        }
+        return _menuState!
+    }
     
     /// Timer for debounced seeking operations
     private var seekDebounceTimer: Timer?
@@ -362,5 +384,172 @@ class TimelineState: ObservableObject {
         let range = Self.maxZoom - Self.minZoom
         let current = pixelsPerSecond - Self.minZoom
         return Double(current / range) * 100
+    }
+    
+    // MARK: - Clip Management Integration Methods
+    
+    /// Initialize clips when a video is loaded
+    /// Integrates clip initialization with video loading (Requirement 1.1)
+    /// - Parameter duration: Total duration of the loaded video
+    func initializeClipsForVideo(duration: TimeInterval) {
+        clipManager.initializeClips(duration: duration)
+    }
+    
+    /// Handle clip selection at a specific time position
+    /// Coordinates between timeline position and clip selection (Requirements 2.1, 2.2)
+    /// - Parameter time: Time position where clip selection should occur
+    func selectClipAtTime(_ time: TimeInterval) {
+        clipManager.selectClip(at: time)
+    }
+    
+    /// Clear clip selection and hide any visible menu
+    /// Coordinates selection clearing between clip manager and menu state
+    func clearClipSelection() {
+        clipManager.clearSelection()
+        menuState.hideMenu()
+    }
+    
+    /// Show context menu for the selected clip at the specified position
+    /// Coordinates menu display with clip selection state
+    /// - Parameter position: Position where the menu should appear
+    func showContextMenuForSelectedClip(at position: CGPoint) {
+        guard let selectedClip = clipManager.getSelectedClip() else { return }
+        menuState.showMenu(at: position, for: selectedClip.id)
+    }
+    
+    /// Hide the context menu without affecting clip selection
+    func hideContextMenu() {
+        menuState.hideMenu()
+    }
+    
+    /// Get the currently selected clip
+    /// - Returns: The selected VideoClip if any, nil otherwise
+    func getSelectedClip() -> VideoClip? {
+        return clipManager.getSelectedClip()
+    }
+    
+    /// Get the clip at a specific time position
+    /// - Parameter time: Time position to search for
+    /// - Returns: VideoClip if found, nil otherwise
+    func getClipAtTime(_ time: TimeInterval) -> VideoClip? {
+        return clipManager.getClip(at: time)
+    }
+    
+    /// Add a split point at the current playhead position with enhanced validation
+    /// Coordinates split operations between timeline and clip management with comprehensive error handling
+    /// - Parameter time: Time position where the split should occur
+    /// - Returns: True if split was successful, false otherwise
+    @discardableResult
+    func addSplitPointAtTime(_ time: TimeInterval) -> Bool {
+        // Comprehensive validation before attempting split
+        guard validateSplitOperation(at: time) else {
+            print("TimelineState: Split operation validation failed at time \(time)")
+            return false
+        }
+        
+        // Attempt split with error handling
+        let success = clipManager.addSplitPoint(at: time)
+        
+        if success {
+            // Hide menu after successful split operation
+            menuState.hideMenu()
+            
+            // Log successful split for debugging/analytics
+            print("TimelineState: Successfully added split point at \(time)")
+            
+            // Validate the resulting clip state
+            if !validateClipStateAfterSplit() {
+                print("TimelineState: Warning - clip state validation failed after split")
+            }
+        } else {
+            print("TimelineState: Failed to add split point at \(time)")
+        }
+        
+        return success
+    }
+    
+    /// Validate that a split operation can be performed at the specified time
+    /// This provides comprehensive validation before attempting the split
+    private func validateSplitOperation(at time: TimeInterval) -> Bool {
+        // Basic time validation
+        guard time.isFinite && !time.isNaN && time >= 0 else {
+            print("TimelineState: Invalid split time - not finite or negative: \(time)")
+            return false
+        }
+        
+        // Check if there's a clip at this time
+        guard let targetClip = clipManager.getClip(at: time) else {
+            print("TimelineState: No clip found at split time \(time)")
+            return false
+        }
+        
+        // Validate the target clip is suitable for splitting
+        guard targetClip.duration > 0.2 else { // Minimum 200ms for splitting
+            print("TimelineState: Target clip too short for splitting: \(targetClip.duration)s")
+            return false
+        }
+        
+        // Check that split point is not too close to clip boundaries
+        let minDistanceFromBoundary: TimeInterval = 0.1
+        let distanceFromStart = time - targetClip.startTime
+        let distanceFromEnd = targetClip.endTime - time
+        
+        if distanceFromStart < minDistanceFromBoundary {
+            print("TimelineState: Split too close to clip start: \(distanceFromStart)s")
+            return false
+        }
+        
+        if distanceFromEnd < minDistanceFromBoundary {
+            print("TimelineState: Split too close to clip end: \(distanceFromEnd)s")
+            return false
+        }
+        
+        return true
+    }
+    
+    /// Validate the clip state after a split operation
+    /// This ensures the split operation resulted in a valid clip configuration
+    private func validateClipStateAfterSplit() -> Bool {
+        let clips = clipManager.clips
+        
+        // Check that we have at least one clip
+        guard !clips.isEmpty else {
+            print("TimelineState: No clips after split operation")
+            return false
+        }
+        
+        // Validate each clip has positive duration
+        for (index, clip) in clips.enumerated() {
+            if clip.duration <= 0 {
+                print("TimelineState: Clip \(index) has invalid duration: \(clip.duration)")
+                return false
+            }
+        }
+        
+        // Check for gaps or overlaps between clips
+        let sortedClips = clips.sorted { $0.startTime < $1.startTime }
+        for i in 0..<(sortedClips.count - 1) {
+            let currentClip = sortedClips[i]
+            let nextClip = sortedClips[i + 1]
+            
+            let gap = nextClip.startTime - currentClip.endTime
+            if abs(gap) > 0.001 {
+                print("TimelineState: Gap between clips \(i) and \(i+1): \(gap)s")
+                return false
+            }
+        }
+        
+        return true
+    }
+    
+    /// Reset timeline state including clip management
+    /// Extended reset method that also clears clip and menu state
+    func resetWithClipManagement() {
+        // Reset timeline state
+        reset()
+        
+        // Reset clip management state
+        clipManager.reset()
+        menuState.hideMenu()
     }
 }

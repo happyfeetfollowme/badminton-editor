@@ -28,6 +28,9 @@ struct TimelineContentView: View {
     /// Thumbnail provider for timeline thumbnails
     @ObservedObject var thumbnailProvider: ThumbnailProvider
     
+    /// Timeline state for clip management and gesture coordination
+    @ObservedObject var timelineState: TimelineState
+    
     // MARK: - Constants
     
     /// Base offset for timeline alignment
@@ -78,6 +81,7 @@ struct TimelineContentView: View {
     private func videoThumbnailTrack(height: CGFloat) -> some View {
         VideoThumbnailTrackView(
             thumbnailProvider: thumbnailProvider,
+            timelineState: timelineState,
             player: player,
             totalDuration: totalDuration,
             pixelsPerSecond: pixelsPerSecond,
@@ -113,6 +117,8 @@ struct TimelineContentView: View {
 struct TimelineContentView_Previews: PreviewProvider {
     static var previews: some View {
         let dummyProvider = ThumbnailProvider()
+        let dummyTimelineState = TimelineState()
+        
         TimelineContentView(
             player: AVPlayer(),
             totalDuration: 120.0,
@@ -120,9 +126,13 @@ struct TimelineContentView_Previews: PreviewProvider {
             contentOffset: .constant(0),
             isDragging: false,
             screenWidth: 400,
-            thumbnailProvider: dummyProvider
+            thumbnailProvider: dummyProvider,
+            timelineState: dummyTimelineState
         )
         .frame(height: 120)
         .background(Color.black)
+        .onAppear {
+            dummyTimelineState.initializeClipsForVideo(duration: 120.0)
+        }
     }
 }

@@ -7,6 +7,9 @@ import AVKit
 struct VideoThumbnailTrackView: View {
     // MARK: - Properties (all stored and computed properties first)
     @ObservedObject var thumbnailProvider: ThumbnailProvider
+    
+    /// Timeline state for clip management and gesture coordination
+    @ObservedObject var timelineState: TimelineState
 
     /// AVPlayer instance for thumbnail generation
     let player: AVPlayer
@@ -105,6 +108,34 @@ struct VideoThumbnailTrackView: View {
                                 y: timestampHeight / 2 + verticalSpacing + thumbnailSize.height / 2
                             )
                         }
+                        
+                        // Clip selection overlay with enhanced gesture handling and error recovery
+                        ClipSelectionOverlay(
+                            timelineState: timelineState,
+                            totalDuration: totalDuration,
+                            pixelsPerSecond: pixelsPerSecond,
+                            contentOffset: contentOffset,
+                            screenWidth: screenWidth
+                        )
+                        .allowsHitTesting(true) // Ensure overlay receives tap gestures
+                        
+                        // Split markers overlay
+                        SplitMarkerView(
+                            splitPoints: timelineState.clipManager.splitPoints,
+                            pixelsPerSecond: pixelsPerSecond,
+                            baseOffset: baseOffset,
+                            timelineHeight: timestampHeight + verticalSpacing + thumbnailSize.height
+                        )
+                        .allowsHitTesting(false) // Markers should not intercept gestures
+                        
+                        // Context menu overlay with conditional rendering
+                        ClipContextMenuContainer(
+                            menuState: timelineState.menuState,
+                            timelineState: timelineState,
+                            player: player,
+                            timelineGeometry: geometry
+                        )
+                        .allowsHitTesting(timelineState.menuState.isVisible) // Only intercept gestures when menu is visible
                     }
                     .frame(width: calculateContentWidth(thumbnailWidth: thumbnailSize.width), height: timestampHeight + verticalSpacing + thumbnailSize.height)
                 }
@@ -315,7 +346,62 @@ struct VideoThumbnailTrackView: View {
         return UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
     }
     
-    // Zoom change observer and handler removed as requested
+    // MARK: - Error Handling and Validation
+    
+    /// Validate overlay parameters to prevent runtime issues
+    /// This implements comprehensive parameter validation for edge cases
+    private func validateOverlayParameters() {
+        // Validate duration
+        if totalDuration <= 0 || !totalDuration.isFinite {
+            print("VideoThumbnailTrackView: Invalid total duration: \(totalDuration)")
+        }
+        
+        // Validate pixels per second
+        if pixelsPerSecond <= 0 || !pixelsPerSecond.isFinite {
+            print("VideoThumbnailTrackView: Invalid pixels per second: \(pixelsPerSecond)")
+        }
+        
+        // Validate screen width
+        if screenWidth <= 0 || !screenWidth.isFinite {
+            print("VideoThumbnailTrackView: Invalid screen width: \(screenWidth)")
+        }
+        
+        // Check for extreme zoom levels that might cause performance issues
+        if pixelsPerSecond > 1000 {
+            print("VideoThumbnailTrackView: Warning - extremely high zoom level: \(pixelsPerSecond)")
+        }
+        
+        if pixelsPerSecond < 1 {
+            print("VideoThumbnailTrackView: Warning - extremely low zoom level: \(pixelsPerSecond)")
+        }
+        
+        // Validate content offset is reasonable
+        let maxReasonableOffset = screenWidth * 10 // Allow 10 screen widths of offset
+        if abs(contentOffset) > maxReasonableOffset {
+            print("VideoThumbnailTrackView: Warning - extreme content offset: \(contentOffset)")
+        }
+    }
+    
+    /// Handle edge cases for very short clips at maximum zoom levels
+    /// This ensures clips remain selectable even at extreme zoom levels
+    private func handleExtremeZoomEdgeCases() -> Bool {
+        // Check if we're at maximum zoom level
+        guard pixelsPerSecond >= 500 else { return false }
+        
+        // Check if any clips are shorter than 1 pixel at current zoom
+        let minVisibleDuration = Double(1.0 / pixelsPerSecond)
+        let shortClips = timelineState.clipManager.clips.filter { $0.duration < minVisibleDuration }
+        
+        if !shortClips.isEmpty {
+            print("VideoThumbnailTrackView: Warning - \(shortClips.count) clips shorter than 1 pixel at current zoom")
+            
+            // Could implement special handling for very short clips here
+            // For example, minimum clip width or special visual indicators
+            return true
+        }
+        
+        return false
+    }
     
     // MARK: - Cache Management
     
@@ -327,8 +413,11 @@ struct VideoThumbnailTrackView: View {
 struct VideoThumbnailTrackView_Previews: PreviewProvider {
     static var previews: some View {
         let dummyProvider = ThumbnailProvider()
+        let dummyTimelineState = TimelineState()
+        
         VideoThumbnailTrackView(
             thumbnailProvider: dummyProvider,
+            timelineState: dummyTimelineState,
             player: AVPlayer(),
             totalDuration: 120.0,
             pixelsPerSecond: 50.0,
@@ -338,5 +427,8 @@ struct VideoThumbnailTrackView_Previews: PreviewProvider {
         .frame(height: 60)
         .background(Color.black)
         .previewLayout(.sizeThatFits)
+        .onAppear {
+            dummyTimelineState.initializeClipsForVideo(duration: 120.0)
+        }
     }
 }

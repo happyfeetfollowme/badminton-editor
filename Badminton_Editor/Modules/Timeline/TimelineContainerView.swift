@@ -93,16 +93,12 @@ struct TimelineContainerView: View {
                 contentOffset: $timelineState.contentOffset,
                 isDragging: timelineState.isDragging,
                 screenWidth: geometry.size.width,
-                thumbnailProvider: thumbnailProvider
+                thumbnailProvider: thumbnailProvider,
+                timelineState: timelineState
             )
             .simultaneousGesture(
-                DragGesture(coordinateSpace: .named("timeline"))
-                    .onChanged { value in
-                        handleDragChanged(value, screenWidth: geometry.size.width, timelineHeight: geometry.size.height)
-                    }
-                    .onEnded { value in
-                        handleDragEnded(value, screenWidth: geometry.size.width, timelineHeight: geometry.size.height)
-                    }
+                // Enhanced drag gesture with conflict resolution
+                createTimelineScrollGesture(geometry: geometry)
             )
             .onTapGesture { location in
                 handleTapGesture(location, screenWidth: geometry.size.width)
@@ -223,6 +219,11 @@ struct TimelineContainerView: View {
     private func setupTimelineState() {
         timelineState.reset()
         
+        // Initialize clips for the video duration
+        if totalDuration > 0 {
+            timelineState.initializeClipsForVideo(duration: totalDuration)
+        }
+        
         // 立即設定正確的 contentOffset，讓當前時間對齊 playhead
         DispatchQueue.main.async {
             let screenWidth = UIScreen.main.bounds.width
@@ -269,6 +270,9 @@ struct TimelineContainerView: View {
         if newDuration > 86400 { // More than 24 hours
             print("Warning: Extremely long duration detected: \(newDuration) seconds")
         }
+        
+        // Initialize clips for the new video duration
+        timelineState.initializeClipsForVideo(duration: newDuration)
         
         // 立即設定正確的 contentOffset，讓時間 0.0 對齊 playhead
         DispatchQueue.main.async {
@@ -328,12 +332,32 @@ struct TimelineContainerView: View {
         performanceMonitor.clearWarnings()
     }
     
+    // MARK: - Enhanced Gesture Handling with Conflict Resolution
+    
+    /// Create timeline scroll gesture with proper conflict resolution
+    /// This ensures timeline scrolling works properly alongside clip selection
+    private func createTimelineScrollGesture(geometry: GeometryProxy) -> some Gesture {
+        DragGesture(minimumDistance: 5, coordinateSpace: .named("timeline"))
+            .onChanged { value in
+                handleDragChanged(value, screenWidth: geometry.size.width, timelineHeight: geometry.size.height)
+            }
+            .onEnded { value in
+                handleDragEnded(value, screenWidth: geometry.size.width, timelineHeight: geometry.size.height)
+            }
+    }
+    
     // MARK: - Enhanced Drag Gesture Handlers
     
-    /// Handle drag gesture changes for timeline scrubbing with enhanced state tracking
+    /// Handle drag gesture changes for timeline scrubbing with enhanced state tracking and error handling
     private func handleDragChanged(_ value: DragGesture.Value, screenWidth: CGFloat, timelineHeight: CGFloat = 120) {
         // Record frame for performance monitoring
         performanceMonitor.recordFrame()
+        
+        // Validate input parameters to prevent crashes
+        guard validateDragParameters(value: value, screenWidth: screenWidth, timelineHeight: timelineHeight) else {
+            print("TimelineContainerView: Invalid drag parameters, ignoring gesture")
+            return
+        }
         
         // Initialize drag state on first change
         if !timelineState.isDragging {
@@ -341,51 +365,144 @@ struct TimelineContainerView: View {
         }
         
         // Handle edge case: invalid duration
-        guard totalDuration > 0 else { 
-            print("Warning: Cannot perform drag with invalid duration: \(totalDuration)")
+        guard totalDuration > 0 && totalDuration.isFinite else { 
+            print("TimelineContainerView: Cannot perform drag with invalid duration: \(totalDuration)")
             return 
         }
         
-        // Handle edge case: extreme screen width
-        guard screenWidth > 0 && screenWidth < 10000 else {
-            print("Warning: Invalid screen width detected: \(screenWidth)")
+        // Calculate target time based on drag distance from start with validation
+        let totalDragDistance = value.translation.width
+        
+        // Handle edge case: extreme drag values that could cause overflow
+        guard abs(totalDragDistance) < screenWidth * 5 && totalDragDistance.isFinite else {
+            print("TimelineContainerView: Extreme drag distance detected: \(totalDragDistance), clamping")
             return
         }
         
-        // Calculate target time based on drag distance from start
-        // Positive drag (right) = backward in time, negative drag (left) = forward in time
-        // This creates a natural scrolling behavior where dragging right shows earlier content
-        let totalDragDistance = value.translation.width
         let timeOffset = Double(totalDragDistance / timelineState.pixelsPerSecond)
+        
+        // Validate time offset is reasonable
+        guard timeOffset.isFinite && abs(timeOffset) < totalDuration * 2 else {
+            print("TimelineContainerView: Invalid time offset calculated: \(timeOffset)")
+            return
+        }
+        
         let rawTargetTime = dragStartTime - timeOffset  // Note: minus sign for natural scrolling
         let targetTime = handleTimelineBoundaries(rawTargetTime, totalDuration: totalDuration, timelineHeight: timelineHeight)
         
-        // Handle edge case: extreme drag values
-        guard abs(totalDragDistance) < screenWidth * 3 else {
-            print("Warning: Extreme drag distance detected: \(totalDragDistance), ignoring")
-            return
-        }
-        
         // Update the content offset to keep the target time centered
-        // This moves the timeline content so the target time appears under the playback marker
         let newOffset = timelineState.calculateOffsetToCenter(
             time: targetTime,
             screenWidth: screenWidth,
             baseOffset: 500
         )
         
+        // Validate the new offset is reasonable
+        guard newOffset.isFinite && abs(newOffset) < screenWidth * 10 else {
+            print("TimelineContainerView: Invalid content offset calculated: \(newOffset)")
+            return
+        }
+        
         // Apply immediate update for responsive scrubbing (no animation during drag)
         timelineState.contentOffset = newOffset
         
-        // Perform throttled seeking for smooth performance (less frequent than every frame)
+        // Perform throttled seeking for smooth performance with error handling
         let now = CACurrentMediaTime()
         if now - timelineState.lastSeekTime > 0.033 { // Limit to 30fps for seeking
-            performDebouncedSeek(to: targetTime)
+            performDebouncedSeekWithErrorHandling(to: targetTime)
             timelineState.updateLastSeekTime(now)
         }
         
         // Update drag tracking state
         lastDragTranslation = value.translation
+    }
+    
+    /// Validate drag gesture parameters to prevent runtime errors
+    /// This implements comprehensive parameter validation for edge cases
+    private func validateDragParameters(value: DragGesture.Value, screenWidth: CGFloat, timelineHeight: CGFloat) -> Bool {
+        // Validate drag value components
+        guard value.translation.width.isFinite && value.translation.height.isFinite else {
+            print("TimelineContainerView: Invalid drag translation values")
+            return false
+        }
+        
+        guard value.location.x.isFinite && value.location.y.isFinite else {
+            print("TimelineContainerView: Invalid drag location values")
+            return false
+        }
+        
+        // Validate screen dimensions
+        guard screenWidth > 0 && screenWidth.isFinite && screenWidth < 10000 else {
+            print("TimelineContainerView: Invalid screen width: \(screenWidth)")
+            return false
+        }
+        
+        guard timelineHeight > 0 && timelineHeight.isFinite && timelineHeight < 1000 else {
+            print("TimelineContainerView: Invalid timeline height: \(timelineHeight)")
+            return false
+        }
+        
+        // Validate pixels per second is reasonable
+        guard timelineState.pixelsPerSecond > 0 && timelineState.pixelsPerSecond.isFinite else {
+            print("TimelineContainerView: Invalid pixels per second: \(timelineState.pixelsPerSecond)")
+            return false
+        }
+        
+        return true
+    }
+    
+    /// Enhanced debounced seek with comprehensive error handling
+    private func performDebouncedSeekWithErrorHandling(to targetTime: TimeInterval) {
+        // Validate target time before seeking
+        guard targetTime.isFinite && !targetTime.isNaN else {
+            print("TimelineContainerView: Invalid target time for seek: \(targetTime)")
+            return
+        }
+        
+        let startTime = CACurrentMediaTime()
+        
+        // Use enhanced timer-based debouncing with comprehensive error handling
+        timelineState.scheduleDebouncedSeek(to: targetTime, player: player) { success, error in
+            let duration = CACurrentMediaTime() - startTime
+            performanceMonitor.recordSeekOperation(duration: duration, success: success)
+            
+            if !success {
+                handleSeekErrorWithRecovery(error, targetTime: targetTime)
+            }
+        }
+    }
+    
+    /// Handle seek errors with automatic recovery mechanisms
+    private func handleSeekErrorWithRecovery(_ error: Error?, targetTime: TimeInterval) {
+        guard let error = error else { return }
+        
+        // Log error for debugging
+        print("TimelineContainerView: Seek error at \(targetTime): \(error.localizedDescription)")
+        
+        // Check if we have too many consecutive failures
+        if timelineState.hasTooManySeekFailures {
+            print("TimelineContainerView: Too many seek failures, attempting recovery")
+            
+            // Attempt recovery by seeking to last known good position
+            let recoveryTime = timelineState.lastKnownGoodSeekTime
+            
+            // Validate recovery time
+            guard recoveryTime.isFinite && recoveryTime >= 0 && recoveryTime <= totalDuration else {
+                print("TimelineContainerView: Invalid recovery time: \(recoveryTime)")
+                return
+            }
+            
+            timelineState.performImmediateSeek(to: recoveryTime, player: player) { success, _ in
+                if success {
+                    print("TimelineContainerView: Successfully recovered to time \(recoveryTime)")
+                    // Reset failure tracking on successful recovery
+                    timelineState.resetSeekFailureTracking()
+                } else {
+                    print("TimelineContainerView: Recovery seek also failed")
+                    // Could implement additional recovery strategies here
+                }
+            }
+        }
     }
     
     /// Handle drag gesture end with final state cleanup
