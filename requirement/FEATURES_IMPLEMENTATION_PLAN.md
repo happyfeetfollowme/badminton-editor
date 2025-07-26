@@ -6,8 +6,8 @@
 - [X] **Timeline**: The central place where all editing happens.
 - [X] **Previewing/Scrubbing**: Users must be able to see their edits in real-time and navigate the video precisely.
 - [X] **Scroll Thumbnails**: For basic navigation and positioning along the timeline.
-- [ ] **Split Video (via Double Tap & Popup Menu)**: Fundamental editing action. Mechanism is double tap and popup.
-- [ ] **Popup Menu on Double Tap**: Direct user interaction for splitting.
+- [X] **Split Video (via Double Tap & Popup Menu)**: Fundamental editing action. Mechanism is double tap and popup. (**not properly functional!**)
+- [X] **Popup Menu on Double Tap**: Direct user interaction for splitting. (**not properly functional!**)
 - [ ] **Span Clip Boundary (Trimming/Extending)**: Fundamental editing action.
 - [ ] **Undo/Redo Actions**: Critical for a forgiving and user-friendly experience.
 
