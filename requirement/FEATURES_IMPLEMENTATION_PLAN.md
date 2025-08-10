@@ -5,9 +5,10 @@
 - [X] **Video Player Interface & Play Control**: The user needs to see the video and play it.
 - [X] **Timeline**: The central place where all editing happens.
 - [X] **Previewing/Scrubbing**: Users must be able to see their edits in real-time and navigate the video precisely.
-- [X] **Scroll Thumbnails**: For basic navigation and positioning along the timeline.
-- [X] **Split Video (via Double Tap & Popup Menu)**: Fundamental editing action. Mechanism is double tap and popup. (**not properly functional!**)
-- [X] **Popup Menu on Double Tap**: Direct user interaction for splitting. (**not properly functional!**)
+- [X] **Scroll Thumbnails**: For basic navigation and positioning along the timeline. 
+- [X] **Clip Selection & White Border**: When the user taps on a video clip, the clip will be selected and rounded by a white border. When the user taps on another clip, the white border of the original clip will be dismissed and the new clip will have a white border. (**not properly functional!**)
+- [X] **Popup Menu on Single Tap**: Direct user interaction for splitting.
+- [X] **Split Video (via single Tap & Popup Menu)**: Fundamental editing action. Mechanism is single tap and popup. (**not properly functional!**)
 - [ ] **Span Clip Boundary (Trimming/Extending)**: Fundamental editing action.
 - [ ] **Undo/Redo Actions**: Critical for a forgiving and user-friendly experience.
 
