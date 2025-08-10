@@ -9,8 +9,8 @@ class MenuState: ObservableObject {
     @Published var isVisible: Bool = false
     
     /// The position where the menu should be displayed
-    @Published var position: CGPoint = .zero
-    
+    @Published var position: CGPoint = CGPoint(x: UIScreen.main.bounds.width / 2, y: UIScreen.main.bounds.height * 0.3)
+
     /// The ID of the clip that the menu is targeting
     @Published var targetClipId: UUID? = nil
     

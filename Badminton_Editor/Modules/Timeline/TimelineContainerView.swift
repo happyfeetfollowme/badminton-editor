@@ -84,7 +84,7 @@ struct TimelineContainerView: View {
             Rectangle()
                 .fill(Color.gray.opacity(0.2))
                 .frame(height: geometry.size.height)
-            
+
             // Timeline content view with scrollable content
             TimelineContentView(
                 player: player,
@@ -101,10 +101,20 @@ struct TimelineContainerView: View {
                 createTimelineScrollGesture(geometry: geometry)
             )
             .onTapGesture { location in
-                handleTapGesture(location, screenWidth: geometry.size.width)
-            }
-            .onTapGesture(count: 2) { location in
-                handleDoubleTapGesture(location)
+                // Dismiss menu if visible and tap is outside menu area
+                if timelineState.menuState.isVisible {
+                    let menuSize = CGSize(width: 60, height: 50)
+                    let menuPosition = timelineState.menuState.position
+                    let menuRect = CGRect(
+                        x: menuPosition.x - menuSize.width / 2,
+                        y: menuPosition.y - menuSize.height / 2,
+                        width: menuSize.width,
+                        height: menuSize.height
+                    )
+                    if !menuRect.contains(location) {
+                        timelineState.hideContextMenu()
+                    }
+                }
             }
         }
     }
@@ -531,17 +541,20 @@ struct TimelineContainerView: View {
     
     /// Initialize drag state when drag begins
     private func initializeDragState(_ value: DragGesture.Value) {
-        timelineState.startDragGesture()
-        dragStartTime = currentTime
-        dragStartLocation = value.startLocation
-        lastDragTranslation = .zero
-        
-        // Disable automatic scrolling during manual drag
-        // This implements task 12 requirement 3: "Disable automatic scrolling when user is actively dragging timeline"
-        disableAutomaticScrolling()
-        
-        // Store initial seek time for debouncing
-        timelineState.updateLastSeekTime(CACurrentMediaTime())
+    timelineState.startDragGesture()
+    dragStartTime = currentTime
+    dragStartLocation = value.startLocation
+    lastDragTranslation = .zero
+
+    // Dismiss menu when scrubbing starts
+    timelineState.hideContextMenu()
+
+    // Disable automatic scrolling during manual drag
+    // This implements task 12 requirement 3: "Disable automatic scrolling when user is actively dragging timeline"
+    disableAutomaticScrolling()
+
+    // Store initial seek time for debouncing
+    timelineState.updateLastSeekTime(CACurrentMediaTime())
     }
     
     /// Finalize drag state when drag ends
@@ -596,27 +609,6 @@ struct TimelineContainerView: View {
         // This method can be extended to provide visual feedback during dragging
         // For now, we rely on the AVPlayer seeking to update the currentTime binding
         // which will trigger UI updates through the onChange modifier
-    }
-    
-    /// Handle tap gesture for seek-to-position
-    private func handleTapGesture(_ location: CGPoint, screenWidth: CGFloat) {
-        guard totalDuration > 0 else { return }
-        
-        // Calculate time from tap position relative to screen center
-        let tapOffsetFromCenter = location.x - screenWidth / 2
-        let timeOffset = Double(tapOffsetFromCenter / timelineState.pixelsPerSecond)
-        let newTime = max(0, min(totalDuration, currentTime + timeOffset))
-        
-        // Use immediate seek for tap gestures (no debouncing needed for single taps)
-        timelineState.performImmediateSeek(to: newTime, player: player) { success, error in
-            if !success {
-                handleSeekError(error)
-            }
-        }
-    }
-    
-    /// Handle double tap gesture for marker menu
-    private func handleDoubleTapGesture(_ location: CGPoint) {
     }
     
     // MARK: - Enhanced Zoom Controls

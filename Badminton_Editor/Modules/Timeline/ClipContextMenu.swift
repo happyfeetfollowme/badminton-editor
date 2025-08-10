@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 /// Context menu component for clip operations
 /// Displays a popup menu with split functionality when a clip is selected
@@ -112,19 +113,18 @@ struct ClipContextMenuContainer: View {
     /// Calculate the menu position centered on timeline view (Requirements 3.2, 3.3)
     /// - Returns: CGPoint for menu positioning
     private func calculateMenuPosition() -> CGPoint {
-        // Use the position from MenuState if available, otherwise fallback to center
-        if menuState.isVisible && menuState.position != .zero {
-            return menuState.position
-        }
-        
-        // Fallback to timeline center with bounds checking
+        // Fallback to SCREEN center (horizontal) converted to the timeline's local space, with bounds checking
         let menuSize = CGSize(width: 60, height: 50)
-        let timelineCenter = timelineGeometry.size.width / 2
-        
+        // Screen center X (global coordinates)
+        let screenCenterX = UIScreen.main.bounds.width / 2
+        // Convert global screen center X to local coordinates of the timeline view
+        let timelineGlobalFrame = timelineGeometry.frame(in: .global)
+        let localCenterX = screenCenterX - timelineGlobalFrame.minX
+            
         // Ensure menu stays within bounds
         let minX = menuSize.width / 2
         let maxX = timelineGeometry.size.width - menuSize.width / 2
-        let menuX = max(minX, min(maxX, timelineCenter))
+        let menuX = max(minX, min(maxX, localCenterX))
         
         // Position menu in upper portion with bounds checking
         let minY = menuSize.height / 2

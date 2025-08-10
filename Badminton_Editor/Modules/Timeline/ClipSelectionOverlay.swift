@@ -208,21 +208,37 @@ struct ClipSelectionOverlay: View {
     /// Handle tap gesture when context menu is visible
     /// This implements proper menu dismissal logic with selection preservation
     private func handleTapWithMenuVisible(tapTime: TimeInterval, location: CGPoint, geometry: GeometryProxy) {
+        // Get menu position and size
+        let menuSize = CGSize(width: 60, height: 50)
+        let menuPosition = timelineState.menuState.position
+        let menuRect = CGRect(
+            x: menuPosition.x - menuSize.width / 2,
+            y: menuPosition.y - menuSize.height / 2,
+            width: menuSize.width,
+            height: menuSize.height
+        )
+
+        // If tap is inside the menu, keep menu visible
+        if menuRect.contains(location) {
+            print("ClipSelectionOverlay: Tap inside menu - keeping menu visible")
+            return
+        }
+
         // Validate tap time is within reasonable bounds (allow some overshoot for smooth UX)
         let timeBuffer: TimeInterval = 1.0 // Allow 1 second overshoot
-        
+
         if tapTime >= -timeBuffer && tapTime <= totalDuration + timeBuffer,
            let tappedClip = timelineState.clipManager.getClip(at: tapTime) {
             // Tap is on a valid clip
             if tappedClip.isSelected {
-                // Tapping on the same selected clip - keep menu visible (no action needed)
-                print("ClipSelectionOverlay: Tap on selected clip while menu visible - maintaining menu")
+                // Tapping on the same selected clip but outside menu - dismiss menu
+                print("ClipSelectionOverlay: Tap on selected clip but outside menu - dismissing menu")
+                timelineState.hideContextMenu()
                 return
             } else {
                 // Tapping on a different clip - hide menu and select new clip
                 print("ClipSelectionOverlay: Tap on different clip while menu visible - switching selection")
                 timelineState.hideContextMenu()
-                
                 // Validate the new clip selection
                 if validateClipSelection(at: tapTime) {
                     timelineState.selectClipAtTime(tapTime)
@@ -232,7 +248,7 @@ struct ClipSelectionOverlay: View {
             }
         } else {
             // Tap outside any clip or outside reasonable video bounds - dismiss menu but preserve selection
-            print("ClipSelectionOverlay: Tap outside clips while menu visible - dismissing menu")
+            print("ClipSelectionOverlay: Tap outside clips and menu while menu visible - dismissing menu")
             timelineState.hideContextMenu()
         }
     }
